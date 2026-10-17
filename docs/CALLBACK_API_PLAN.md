@@ -30,8 +30,8 @@
 - `message_new` / `message_event` → конвертация в `VkEvent` и вызов `handle_event`
   (тот же диспетчер, что и Long Poll — кнопки/пейлоады не меняются);
 - `market_order_new` → `handle_market_order`: берём `user_id` покупателя, находим
-  его заявку `topup:pending:{id}`, сверяем цену пакета с `total` заказа
-  (копейки/100), зачисляем через `_apply_topup_payload` и пишем игроку;
+  его заявку `topup:pending:{id}`, сверяем цену пакета с `amount` заказа
+  (копейки/100, fallback `total`), зачисляем через `_apply_topup_payload` и пишем игроку;
   при несовпадении цены — заявка остаётся, админ получает уведомление
   (ручной `confirm_topup` остаётся как запасной путь);
 - фоновый тик `_zone_tick` запускается и в webhook-режиме.

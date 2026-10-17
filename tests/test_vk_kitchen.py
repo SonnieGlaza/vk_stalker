@@ -190,3 +190,29 @@ def test_gender_choice_saved(env):
 async def _handle_cb(mod, m, st, payload, *, uid=UID):
     ev = SimpleNamespace(kind="callback", user_id=uid, peer_id=uid, text="", payload=payload, message_id=None, raw=None)
     await mod._handle_callback(m, st, ev)
+
+
+def test_market_order_auto_confirm(env):
+    """Callback market_order_new с полем amount (копейки) зачисляет RU и удаляет заявку."""
+    import json
+
+    st, m = env
+    before = st.get_character(UID, refresh_energy=False).money
+    st.set_meta(
+        f"{bot.TOPUP_ORDER_PREFIX}{UID}",
+        json.dumps({"label": "🎁 Жетон сталкера", "price_rub": 149, "ru_amount": 1500, "target": "pocket", "nickname": "Тестовый"}, ensure_ascii=False),
+    )
+    result = _run(bot.handle_market_order(m, st, {"user_id": UID, "id": 1, "amount": 14900}))
+    assert result and "1500" in result
+    after = st.get_character(UID, refresh_energy=False).money
+    assert after == before + 1500
+    assert st.get_meta(f"{bot.TOPUP_ORDER_PREFIX}{UID}") is None
+    # Несовпадение цены: заявка остаётся, деньги не начисляются.
+    st.set_meta(
+        f"{bot.TOPUP_ORDER_PREFIX}{UID}",
+        json.dumps({"label": "🎁 Жетон сталкера", "price_rub": 149, "ru_amount": 1500, "target": "pocket", "nickname": "Тестовый"}, ensure_ascii=False),
+    )
+    result2 = _run(bot.handle_market_order(m, st, {"user_id": UID, "id": 2, "amount": 999900}))
+    assert result2 and "не совпала" in result2
+    assert st.get_meta(f"{bot.TOPUP_ORDER_PREFIX}{UID}") is not None
+    assert st.get_character(UID, refresh_energy=False).money == after

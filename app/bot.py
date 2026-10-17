@@ -3830,7 +3830,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4425,7 +4425,12 @@ async def handle_market_order(
     except (TypeError, ValueError, _json.JSONDecodeError):
         pending = {}
     try:
-        total = int(payload.get("total") or 0)
+        # Официальное поле VK market_order_new — amount (сумма в копейках);
+        # total оставляем как fallback (старые записи/план).
+        amount_raw = payload.get("amount")
+        if amount_raw is None:
+            amount_raw = payload.get("total") or 0
+        total = int(amount_raw or 0)
     except (TypeError, ValueError):
         total = 0
     # VK возвращает цены в копейках; защита от опечаток округлением.
@@ -4473,9 +4478,12 @@ async def _topup_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pa
         # Пакет: topup:paid:<idx>:<target>; кастом: topup:paid:custom:<ru>:<target>.
         # Раньше target для пакетов попадал в ru_arg и терялся (всегда «карман»).
         if parts[2] == "custom":
+            if len(parts) < 4:
+                await _topup_open(bot, storage, event)
+                return
             await _topup_mark_paid(
                 bot, storage, event, "custom",
-                parts[3] if len(parts) > 3 else "1500",
+                parts[3],
                 parts[4] if len(parts) > 4 else None,
             )
         else:
