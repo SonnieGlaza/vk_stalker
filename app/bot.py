@@ -1637,10 +1637,8 @@ async def _buildings_callback(bot: VkMessenger, storage: Storage, event: VkEvent
 async def handle_event(bot: VkMessenger, event: VkEvent) -> None:
     storage = get_storage()
     if event.kind == "callback":
-        logger.info("VK callback: user=%s payload=%s", event.user_id, event.payload)
         await _handle_callback(bot, storage, event)
     else:
-        logger.info("VK message: user=%s text=%s", event.user_id, (event.text or "")[:80])
         await _handle_message(bot, storage, event)
 
 
@@ -3797,9 +3795,6 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 
 _ADMIN_IDS: tuple[int, ...] = ()
 
-# Метка сборки: показывается в логе при старте, чтобы отличать свежий код от устаревшего.
-APP_VERSION = "1.0.2"
-
 
 def _init_admin_ids(settings: Any) -> None:
     global _ADMIN_IDS
@@ -5435,8 +5430,11 @@ def main(use_webhook: bool | None = None) -> None:
     settings = load_settings()
     _init_admin_ids(settings)
     get_storage(settings)
-    logger.info("Запуск vk_stalker (version=%s, mode=%s)", APP_VERSION, "webhook" if (use_webhook or settings.use_callback) else "longpoll")
-    if use_webhook or (use_webhook is None and settings.use_callback):
+    # VK_USE_CALLBACK=1 (или флаг --webhook) всегда вводит webhook-режим;
+    # Long Poll остаётся только если явно выключен callback.
+    use_callback_mode = bool(settings.use_callback) or bool(use_webhook)
+    logger.info("Запуск vk_stalker (version=%s, mode=%s)", APP_VERSION, "webhook" if use_callback_mode else "longpoll")
+    if use_callback_mode:
         from app.vk_platform import run_webhook
 
         logger.info("VK Callback webhook стартует (port=%s)", settings.webhook_port)
