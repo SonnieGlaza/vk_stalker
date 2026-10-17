@@ -484,10 +484,10 @@ async def _async_main(
             event = await queue.get()
             if event is None:
                 break
-            try:
-                await handle_event(event, messenger)
-            except Exception:
-                logger.exception("Ошибка обработки VK-события (%s)", event.kind)
+        try:
+            await handle_event(messenger, event)
+        except Exception:
+            logger.exception("Ошибка обработки VK-события (%s)", event.kind)
     finally:
         stop.set()
         for task in tasks:

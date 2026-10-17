@@ -44,6 +44,8 @@ def get_storage(settings: Settings | None = None) -> Storage:
             snapshot_path=cfg.snapshot_path,
             database_url=cfg.database_url,
         )
+        # Создаём схему (SQLite/Postgres) при старте, чтобы сервер работал с готовой БД.
+        _storage.init_db()
     return _storage
 
 
