@@ -127,6 +127,7 @@ async def _kpk(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
 
 
 def _profile_caption(player: Any) -> str:
+    from app.game_logic import effective_max_health
     from app.vk_titles import title_prefix
 
     faction = getattr(player, "faction", None) or "нет"
@@ -137,11 +138,12 @@ def _profile_caption(player: Any) -> str:
         f"🧾 {nick} ({faction})\n"
         f"💰 Баланс: {money} RU\n"
         f"📍 Локация: {player.location}\n"
-        f"❤️ HP: {player.hp}/{player.max_hp}  ⚡ Энергия: {player.energy}/{player.max_energy}"
+        f"❤️ HP: {player.health}/{effective_max_health(player)}  ⚡ Энергия: {player.energy}/{player.max_energy}"
     )
 
 
 async def _status(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import effective_max_health
     from app.vk_titles import title_prefix
 
     player = storage.get_character(int(event.user_id), refresh_energy=True)
@@ -151,7 +153,7 @@ async def _status(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     nick = title_prefix(storage, int(event.user_id), player.nickname)
     await bot.send_message(
         event.peer_id,
-        f"📡 {nick}\nHP {player.hp}/{player.max_hp}\n"
+        f"📡 {nick}\nHP {player.health}/{effective_max_health(player)}\n"
         f"Энергия {player.energy}/{player.max_energy}\nЛокация: {player.location}",
     )
 
@@ -256,8 +258,16 @@ async def _walk_render(bot: VkMessenger, storage: Storage, event: VkEvent, playe
             reply_markup=inline_keyboard(*(rows + _walk_keyboard_rows())),
         )
     except Exception as exc:
-        logger.warning("walk render failed: %s", exc)
-        await bot.send_message(event.peer_id, "Вылазка временно недоступна.", reply_markup=_menu_keyboard())
+        logger.warning("walk render failed: %s", exc, exc_info=True)
+        await bot.send_message(
+            event.peer_id,
+            f"🌲 {getattr(player, 'location', '?')} — карта локации временно недоступна.\n"
+            "Пока можно пользоваться переходами, поиском артов и схроном:",
+            reply_markup=inline_keyboard(
+                [("🗺 Переходы", "travel:open"), ("📡 Поиск артов", "hunt:open")],
+                [("🏚 Схрон", "sthunt:open"), ("⬅️ В меню", "walk:exit")],
+            ),
+        )
 
 
 def _walk_keyboard_rows() -> list[list]:
@@ -1465,11 +1475,11 @@ async def _faction_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> N
     if player is None:
         await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
         return
-    if not player.faction:
+    elif not player.faction:
         await bot.send_message(
             int(event.peer_id),
-            "Ты без группировки. Выбери группировку в меню («Долг» / «Свобода» / «Нейтралы» / «Бандиты»). Ещё не реализовано — вернись позже.",
-            reply_markup=_menu_keyboard(),
+            "Ты пока без группировки. Выбери её кнопками ниже:",
+            reply_markup=_faction_keyboard(),
         )
         return
     await _faction_overview(bot, storage, event)
@@ -5024,6 +5034,20 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await bot.send_message(int(event.peer_id), build_season_schedule_text(storage))
         return
     norm = text.replace("\ufe0f", "").strip()
+    norm_lower = norm.lower()
+    # Универсальная навигация и алиасы, чтобы reply-кнопки всегда срабатывали.
+    if norm_lower in ("кпк", "пда", "паспорт"):
+        await _kpk(bot, storage, event)
+        return
+    if norm_lower in ("статус", "ст"):
+        await _status(bot, storage, event)
+        return
+    if norm_lower in ("⬅️ назад", "назад", "в меню", "меню"):
+        await _menu(bot, storage, event)
+        return
+    if norm_lower in ("📋 список контрактов", "список контрактов", "📋 контракты"):
+        await _quest_list(bot, storage, event, 0)
+        return
     if norm == "📟 КПК":
         await _kpk(bot, storage, event)
     elif norm == "📡 Статус":

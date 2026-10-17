@@ -134,24 +134,39 @@ def reply_keyboard(*rows: Sequence[str]) -> VkKeyboard:
     return build_keyboard(*rows, inline=False, one_time=False)
 
 
+MAX_INLINE_LINES = 6  # жёсткий лимит VK: не больше 6 строк в inline-клавиатуре
+
+
 def inline_keyboard(*rows: Sequence) -> VkKeyboard:
-    """Inline keyboard from (label, cb) pairs; payload buttons -> MESSAGE_EVENT."""
-    kb = VkKeyboard(one_time=False, inline=True)
-    first_row = True
+    """Inline keyboard from (label, cb) pairs; payload buttons -> MESSAGE_EVENT.
+
+    Большие списки (>6 кнопок) упаковываются в столбцы, чтобы не превышать
+    лимит VK на 6 строк inline-клавиатуры.
+    """
+    flat: list[tuple[str, str]] = []
     for row in rows:
-        items = []
         for label, cb in row:
             label = str(label or "").strip()
-            if not label:
-                continue
-            items.append((label, str(cb)))
-        if not items:
-            continue
-        if not first_row:
-            kb.add_line()
-        first_row = False
-        for label, cb in items:
+            if label:
+                flat.append((label, str(cb)))
+    n = len(flat)
+    if n <= MAX_INLINE_LINES:
+        columns = 1
+    elif n <= MAX_INLINE_LINES * 2:
+        columns = 2
+    elif n <= MAX_INLINE_LINES * 3:
+        columns = 3
+    else:
+        columns = 4
+    if n > MAX_INLINE_LINES * columns:
+        logger.warning("inline_keyboard обрезан: %d кнопок не помещаются в 6 строк", n)
+        flat = flat[: MAX_INLINE_LINES * columns]
+    kb = VkKeyboard(one_time=False, inline=True)
+    for i in range(0, len(flat), columns):
+        for label, cb in flat[i : i + columns]:
             kb.add_button(label, color=VkKeyboardColor.PRIMARY, payload=_payload(cb))
+        if i + columns < len(flat):
+            kb.add_line()
     return kb
 
 
