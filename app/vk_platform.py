@@ -529,17 +529,29 @@ def run_webhook(
     messenger = VkMessenger(settings)
 
     async def _on_callback(request: web.Request) -> web.Response:
+        path = request.path
         try:
             data = await request.json()
         except Exception:
+            logger.debug("callback: не-JSON POST на %s", path)
             return web.Response(text="ok")
         if not isinstance(data, dict):
             return web.Response(text="ok")
         typ = str(data.get("type") or "")
         if typ == "confirmation":
-            return web.Response(text=settings.confirmation_code or "ok")
+            code = (settings.confirmation_code or "").strip()
+            if not code:
+                logger.error(
+                    "Callback подтверждение получено, но VK_CONFIRMATION_CODE не задан! "
+                    "Код от VK впиши в .env и перезапусти бота."
+                )
+                return web.Response(text="ok")
+            logger.info("Callback: confirmation OK (группа %s), отвечаю кодом.", data.get("group_id"))
+            return web.Response(text=code, content_type="text/plain")
         if settings.callback_secret and str(data.get("secret") or "") != settings.callback_secret:
+            logger.warning("Callback: неверный secret (тип %s)", typ)
             return web.Response(status=403, text="forbidden")
+        logger.debug("Callback: событие %s (группа %s)", typ, data.get("group_id"))
         obj = data.get("object") or {}
         if typ in ("message_new", "message_event"):
             vk_event = _convert_callback_event(typ, obj)
@@ -561,6 +573,13 @@ def run_webhook(
 
     app = web.Application()
     app.router.add_post("/callback", _on_callback)
+    app.router.add_post("/", _on_callback)
+    app.router.add_post("/{tail:.*}", _on_callback)
+
+    async def _ping(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    app.router.add_get("/", _ping)
 
     async def _run() -> None:
         runner = web.AppRunner(app)
