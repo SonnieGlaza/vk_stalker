@@ -597,7 +597,15 @@ def run_webhook(
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, host="0.0.0.0", port=int(settings.webhook_port or 8080))
-        await site.start()
+        try:
+            await site.start()
+        except OSError as exc:
+            if getattr(exc, "errno", None) in (98, 10048):
+                raise SystemExit(
+                    "Порт " + str(settings.webhook_port) + " уже занят — вероятно, webhook уже запущен "
+                    "(контейнер/второй процесс). Один экземпляр должен слушать порт; лишний запуск не нужен."
+                ) from exc
+            raise
         logger.info("VK Callback webhook запущен на 0.0.0.0:%s", settings.webhook_port)
         tasks = [asyncio.create_task(fn(messenger)) for fn in background]
         try:
