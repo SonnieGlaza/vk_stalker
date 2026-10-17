@@ -337,7 +337,8 @@ def build_predel_assembly_hint(storage: Storage, telegram_id: int) -> str:
     have = [key for key in PREDEL_PART_KEYS if int(player.inventory.get(key, 0)) >= 1]
     if not have:
         return ""
-    lines = [f"🧩 Части «Предела»: {len(have)}/3 ({", ".join(gl.ITEM_LABELS.get(k, k) for k in have)})."]
+    parts_text = ', '.join(gl.ITEM_LABELS.get(k, k) for k in have)
+    lines = [f"🧩 Части «Предела»: {len(have)}/3 ({parts_text})."]
     if len(have) == 3:
         lines.append("Можно собрать «Артефакт «Предел»» — жми кнопку сборки.")
     else:
