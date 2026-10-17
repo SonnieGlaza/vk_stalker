@@ -1,0 +1,15 @@
+.env
+*.db
+*.snapshot.json
+*.backup.json
+__pycache__/
+*.pyc
+.venv/
+
+# local zone map previews
+artifacts/zone_map_*.jpg
+artifacts/zone_map_*.png
+previews/
+
+# local reference photos (never commit)
+карта метки/
