@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 run.py
+# VK-бот: Callback API (webhook). Для Long Poll убери флаг --webhook.
+python3 run_vk.py --webhook
