@@ -609,7 +609,15 @@ def build_character_card(
     draw.rounded_rectangle((454, 108, 1156, 676), radius=16, fill=(33, 35, 44), outline=(66, 68, 82), width=2)
     right_x = 480
     right_max_width = 650
-    draw.text((right_x, 132), f"Пол: {character.gender}", fill=(220, 220, 220), font=body_font)
+    # Русские подписи пола: в БД могут быть male/female (кнопки VK) или Мужской/Женский.
+    _gender_raw = str(getattr(character, "gender", "") or "").strip().lower()
+    _gender_ru = {
+        "male": "Мужской", "м": "Мужской", "мужской": "Мужской",
+        "female": "Женский", "ж": "Женский", "женский": "Женский",
+    }.get(_gender_raw)
+    if not _gender_ru:
+        _gender_ru = "не выбран"
+    draw.text((right_x, 132), f"Пол: {_gender_ru}", fill=(220, 220, 220), font=body_font)
     draw.text(
         (right_x, 158),
         _ellipsize_text(draw, f"Группировка: {character.faction or 'не выбрана'}", body_font, right_max_width),

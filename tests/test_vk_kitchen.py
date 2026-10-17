@@ -155,3 +155,38 @@ def test_text_commands(env):
         assert m.sent and "Не понял" not in _merged(m.sent)
 
     _run(run())
+
+
+def test_topup_paid_keeps_target(env):
+    """Пакетный топ-ап в казну не должен превращаться в «на карман» (регрессия)."""
+    import json
+
+    st, m = env
+    _run(_handle_cb(bot, m, st, "topup:paid:1:treasury"))
+    raw = st.get_meta(f"{bot.TOPUP_ORDER_PREFIX}{UID}")
+    assert raw, "заявка на пополнение не создана"
+    payload = json.loads(str(raw))
+    assert payload["target"] == "treasury", f"цель потеряна: {payload}"
+    assert payload["ru_amount"] == 1500
+    assert payload["label"] == "🎁 Жетон сталкера"
+
+
+def test_gender_choice_saved(env):
+    """Кнопки пола пишут только валидные male/female и продолжают регистрацию."""
+    st, m = env
+    new_uid = UID + 111
+    st.create_character(new_uid, "Новенький", "unknown")
+    _run(_handle_cb(bot, m, st, "reg:gender:female", uid=new_uid))
+    char = st.get_character(new_uid, refresh_energy=False)
+    assert char is not None and char.gender == "female"
+    # Мусорный payload не пишем в БД.
+    another_uid = UID + 222
+    st.create_character(another_uid, "Второй", "unknown")
+    _run(_handle_cb(bot, m, st, "reg:gender:blah", uid=another_uid))
+    char2 = st.get_character(another_uid, refresh_energy=False)
+    assert char2 is not None and char2.gender == "unknown"
+
+
+async def _handle_cb(mod, m, st, payload, *, uid=UID):
+    ev = SimpleNamespace(kind="callback", user_id=uid, peer_id=uid, text="", payload=payload, message_id=None, raw=None)
+    await mod._handle_callback(m, st, ev)

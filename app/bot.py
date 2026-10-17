@@ -3830,7 +3830,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4470,8 +4470,19 @@ async def _topup_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pa
     elif cmd == "custconfirm" and len(parts) >= 4:
         await _topup_confirm_custom(bot, storage, event, parts[2], parts[3])
     elif cmd == "paid" and len(parts) >= 3:
-        target_part = parts[4] if len(parts) > 4 else None
-        await _topup_mark_paid(bot, storage, event, parts[2], parts[3] if len(parts) > 3 else "pocket", target_part)
+        # Пакет: topup:paid:<idx>:<target>; кастом: topup:paid:custom:<ru>:<target>.
+        # Раньше target для пакетов попадал в ru_arg и терялся (всегда «карман»).
+        if parts[2] == "custom":
+            await _topup_mark_paid(
+                bot, storage, event, "custom",
+                parts[3] if len(parts) > 3 else "1500",
+                parts[4] if len(parts) > 4 else None,
+            )
+        else:
+            await _topup_mark_paid(
+                bot, storage, event, parts[2], "pocket",
+                parts[3] if len(parts) > 3 else None,
+            )
     elif cmd == "custom":
         fsm = VkFSM(int(event.user_id))
         await fsm.set_state("topup_custom")
@@ -5692,8 +5703,8 @@ async def _handle_callback(bot: VkMessenger, storage: Storage, event: VkEvent) -
         return
     if payload.startswith("reg:gender"):
         gender = payload.split(":")[-1]
-        char = storage.get_character(int(event.user_id), refresh_energy=False)
-        if char is not None:
+        # Только валидные значения; остальное игнорируем (не пишем мусор в БД).
+        if gender in ("male", "female"):
             try:
                 with storage._connect() as conn:
                     conn.execute(
@@ -5702,7 +5713,7 @@ async def _handle_callback(bot: VkMessenger, storage: Storage, event: VkEvent) -
                     )
             except Exception as exc:
                 logger.warning("gender update failed: %s", exc)
-            await _start_referral_step(bot, storage, event)
+        await _start_referral_step(bot, storage, event)
         return
     if payload.startswith("ref:"):
         await _referral_callback(bot, storage, event, payload)
