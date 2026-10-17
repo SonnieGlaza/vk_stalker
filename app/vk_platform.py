@@ -217,14 +217,24 @@ class VkMessenger:
                 "VK_TOKEN пуст или не задан. Проверь файл .env на хостинге "
                 "(переменная VK_TOKEN) или переменные окружения и перезапусти бота."
             )
+        token_len = len(self.token)
+        prefix = self.token[:10]
+        if not (70 <= token_len <= 95):
+            raise ValueError(
+                f"VK_TOKEN не похож на токен VK: длина {token_len} символов (начинается с «{prefix}…»).\n"
+                "У настоящего ключа доступа сообщества длина ≈ 85 символов (формат vk1.a.…).\n"
+                "Получи новый: Настройки → Работа с API → Ключи доступа → создать токен сообщества "
+                "с правами: сообщения, управление сообществом, Long Poll API, Callback, фото, документы.\n"
+                "Затем вставь его ровно один (без кавычек, пробелов и лишнего текста) в VK_TOKEN в .env."
+            )
         self.vk = vk_api.VkApi(token=self.token, api_version="5.131")
         try:
             self.vk.auth(token_only=True)
         except vk_api.exceptions.LoginRequired as exc:
             raise ValueError(
-                "VK не принял токен (LoginRequired). Проверь, что VK_TOKEN — правами сообщества "
-                "(сообщения, фото, группы, Long Poll/Callback) и не просрочен. "
-                f"Длина токена в .env: {len(self.token)}."
+                "VK не принял токен (LoginRequired). Проверь, что VK_TOKEN — ключ доступа сообщества с "
+                "нужными правами (сообщения, управление сообществом, Long Poll API, Callback) и не "
+                f"просрочен. Длина токена в .env: {len(self.token)}."
             ) from exc
         self._uploader = VkUpload(self.vk)
 
