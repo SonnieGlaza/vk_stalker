@@ -271,12 +271,21 @@ class VkMessenger:
         params.update(extra)
         try:
             resp = self.vk.method("messages.send", params)
-            return int(resp) if resp else  0
+            return int(resp) if resp else 0
         except Exception as exc:
+            if "911" in str(exc) or "Keyboard" in str(exc) or "too much" in str(exc):
+                # Клавиатура слишком большая — повторяем без неё, чтобы сообщение дошло.
+                params.pop("keyboard", None)
+                try:
+                    resp = self.vk.method("messages.send", params)
+                    return int(resp) if resp else 0
+                except Exception as exc2:
+                    logger.warning("messages.send без клавиатуры failed (peer %s): %s", peer_id, exc2)
+                    return None
             logger.warning("messages.send failed (peer %s): %s", peer_id, exc)
             return None
 
-    def send_message(self, chat_id: int, text: str | None, *, reply_markup: VkKeyboard | None = None, attachment: str | None = None, **unused: Any) -> int | None:
+    async def send_message(self, chat_id: int, text: str | None, *, reply_markup: VkKeyboard | None = None, attachment: str | None = None, **unused: Any) -> int | None:
         """Аналог bot.send_message: длинные тексты режет на куски; клавиатура/фото — к первому куску."""
         plain = vk_plain(text)
         chunks = split_long_text(plain)
@@ -295,7 +304,7 @@ class VkMessenger:
 
         return sent
 
-    def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, **unused: Any) -> int | None:
+    async def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, **unused: Any) -> int | None:
         """Аналог bot.send_photo: фото — bytes/BytesIO/path; подпись — plain-текст."""
         try:
             data = bytes()
@@ -321,7 +330,7 @@ class VkMessenger:
             attachment = self._photo_attachment(resp, chat_id)
             if not attachment:
                 return None
-            return self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
+            return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
 
 
 
@@ -353,7 +362,7 @@ class VkMessenger:
             return None
 
 
-    def edit_message_text(self, text: str | None, chat_id: int, message_id: int, *, reply_markup: VkKeyboard | None = None, **unused: Any) -> bool:
+    async def edit_message_text(self, text: str | None, chat_id: int, message_id: int, *, reply_markup: VkKeyboard | None = None, **unused: Any) -> bool:
         """Аналог bot.edit_message_text (сработает там, где ВК позволяет; иначе — False)."""
 
         try:
@@ -384,7 +393,7 @@ class VkMessenger:
             logger.debug("messages.edit failed (peer %s, msg %s): %s", chat_id, message_id, exc)
             return False
 
-    def delete_message(self, chat_id: int, message_id: int) -> bool:
+    async def delete_message(self, chat_id: int, message_id: int) -> bool:
         """Аналог bot.delete_message (в ЛС ВК удалять сообщения обычно нельзя — вернёт False)."""
         try:
             self.vk.method("messages.delete", {
