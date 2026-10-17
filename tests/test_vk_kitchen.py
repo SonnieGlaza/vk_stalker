@@ -83,7 +83,7 @@ async def _click_cbs(st, m, flows):
 def test_menu_reply_buttons(env):
     st, m = env
     labels = [
-        "🧾 Профиль", "🎒 Инвентарь", "📡 Статус", "🏕 Вылазка", "🛒 Торговец",
+        "📟 КПК", "🎒 Инвентарь", "📡 Статус", "🏕 Вылазка", "🛒 Торговец",
         "🏛 Группировка", "📋 Задания", "🪖 Рейды", "🏆 Рейтинг", "🏦 Барахолка",
         "🚚 Контрабанда", "🛰 События", "⚔️ Дуэль", "⚔️ Арена", "👥 Кооп",
         "📅 Ежедневка", "⭐ Пополнить", "🔔 Уведомления", "☠️ Смерти",
@@ -306,13 +306,17 @@ def test_market_order_auto_confirm(env):
 
 
 def test_pda_sections_respond(env):
-    """Все разделы КПК (статистика/журналы/справка) отвечают текстом."""
+    """Все разделы КПК отвечают (text = как в ТГ pda_keyboard)."""
     st, m = env
-    flows = [
-        "pda:stats", "pda:find", "pda:arts", "pda:drop", "pda:info",
-        "pda:deaths", "pda:daily", "pda:notify", "locmap:zonemap", "travel:open",
+    labels = [
+        "📟 КПК", "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "🗺 Карта", "📍 Локация",
+        "👥 Игроки", "🤝 Обмен", "💎 Находки", "💎 Арты", "📊 Дроп", "☠️ Смерти",
+        "📊 Статистика", "📅 Ежедневка", "🔔 Уведомления", "🔥 Как не сдохнуть",
+        "🏛 Клановые задачи", "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
     ]
-    _run(_click_cbs(st, m, flows))
+    _run(_click_texts(st, m, labels))
+    # Инлайн-разделы тоже живы (старые сообщения).
+    _run(_click_cbs(st, m, ["pda:stats", "pda:menu"]))
 
 
 def test_pda_players_flow(env):
@@ -335,20 +339,24 @@ def test_pda_players_flow(env):
 
 
 def test_kpk_keyboard_has_all_sections(env):
-    """Под карточкой КПК все разделы ТГ-КПК (payload-кнопки)."""
+    """Клавиатура КПК — reply-кнопки всех разделов, как pda_keyboard в ТГ."""
     import json
 
-    kb = json.loads(bot._profile_keyboard().get_keyboard())
-    cbs = set()
-    for row in kb["buttons"]:
-        for btn in row:
-            cbs.add(json.loads(btn["action"]["payload"])["cb"])
+    kb = json.loads(bot._pda_keyboard().get_keyboard())
+    assert kb["inline"] is False, "КПК-меню должно быть reply-клавиатурой (кнопки видны всегда)"
+    labels = [btn["action"]["label"] for row in kb["buttons"] for btn in row]
     for want in (
-        "pda:stats", "pda:players", "pda:find", "pda:arts", "pda:drop",
-        "pda:deaths", "pda:daily", "pda:notify", "locmap:zonemap",
-        "travel:open", "ref:info", "pda:info",
+        "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "🗺 Карта", "📍 Локация", "👥 Игроки",
+        "🤝 Обмен", "💎 Находки", "💎 Арты", "📊 Дроп", "☠️ Смерти", "📊 Статистика",
+        "📅 Ежедневка", "🔔 Уведомления", "🔥 Как не сдохнуть", "🏛 Клановые задачи",
+        "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
     ):
-        assert want in cbs, f"в КПК нет кнопки {want}"
+        assert want in labels, f"в КПК нет кнопки {want}"
+    # Командиру добавляется «📣 Сбор».
+    st, m = env
+    st.set_faction_leader("Долг", UID)
+    kb2 = bot._pda_keyboard_for(st, UID).get_keyboard()
+    assert "📣 Сбор" in json.loads(kb2).get("buttons") or "📣 Сбор" in str(kb2)
 
 
 def test_info_text_full(env):

@@ -62,7 +62,7 @@ def _storage_reset() -> None:
 
 def _menu_keyboard():
     return reply_keyboard(
-        ["🧾 Профиль", "🎒 Инвентарь", "📡 Статус"],
+        ["📟 КПК", "🎒 Инвентарь", "📡 Статус"],
         ["🏕 Вылазка", "🛒 Торговец", "🏛 Группировка"],
         ["📋 Задания", "🪖 Рейды", "🏆 Рейтинг"],
         ["🏦 Барахолка", "🚚 Контрабанда", "🛰 События"],
@@ -110,15 +110,33 @@ async def _menu(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     await bot.send_message(event.peer_id, "📟 Выбери раздел:", reply_markup=_menu_keyboard())
 
 
-def _profile_keyboard():
-    """Кнопки разделов профиля (аналог КПК-раздела ТГ), под текстом профиля."""
-    return inline_keyboard(
-        [("📊 Статистика", "pda:stats"), ("👥 Игроки", "pda:players")],
-        [("💎 Находки", "pda:find"), ("💎 Арты", "pda:arts"), ("📊 Дроп", "pda:drop")],
-        [("☠️ Смерти", "pda:deaths"), ("📅 Ежедневка", "pda:daily"), ("🔔 Уведомления", "pda:notify")],
-        [("🗺 Карта Зоны", "locmap:zonemap"), ("🗺 Переходы", "travel:open")],
-        [("🔗 Реферальная система", "ref:info"), ("ℹ️ Информация", "pda:info")],
+def _pda_keyboard(*, is_leader: bool = False):
+    """Клавиатура раздела КПК — как pda_keyboard в ТГ (reply-кнопки, без лимита 6 строк)."""
+    rows: list[list[str]] = [
+        ["🧾 Профиль", "💬 Чаты"],
+        ["🏆 Рейтинг", "🗺 Карта", "📍 Локация"],
+        ["👥 Игроки", "🤝 Обмен"],
+        ["💎 Находки", "💎 Арты"],
+        ["📊 Дроп", "☠️ Смерти"],
+        ["📊 Статистика", "📅 Ежедневка"],
+        ["🔔 Уведомления", "🔥 Как не сдохнуть"],
+        ["🏛 Клановые задачи", "ℹ️ Информация"],
+    ]
+    if is_leader:
+        rows[-1].append("📣 Сбор")
+    rows.append(["🔗 Реферальная система"])
+    rows.append(["⬅️ В меню"])
+    return reply_keyboard(*[tuple(r) for r in rows])
+
+
+def _pda_keyboard_for(storage: Storage, user_id: int):
+    player = storage.get_character(int(user_id), refresh_energy=False)
+    is_leader = bool(
+        player is not None
+        and player.faction
+        and storage.get_faction_leader_id(player.faction) == int(user_id)
     )
+    return _pda_keyboard(is_leader=is_leader)
 
 
 def _profile_text(storage: Storage, player: Any) -> str:
@@ -141,6 +159,7 @@ def _profile_text(storage: Storage, player: Any) -> str:
 
 
 async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Раздел КПК «🧾 Профиль»: текстовый профиль + меню КПК."""
     player = storage.get_character(int(event.user_id), refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
@@ -148,8 +167,67 @@ async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     await bot.send_message(
         event.peer_id,
         _profile_text(storage, player),
-        reply_markup=_profile_keyboard(),
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
     )
+
+
+async def _pda_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Раздел КПК (как в ТГ): заголовок + reply-меню разделов."""
+    player = storage.get_character(int(event.user_id), refresh_energy=True)
+    if player is None:
+        await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
+        return
+    await bot.send_message(
+        event.peer_id,
+        "📟 КПК сталкера\nПрофиль, связь, рейтинг, карта, журналы, артефакты, игроки и рефералка.",
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
+    )
+
+
+async def _pda_chats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    group_id = getattr(bot, "group_id", None)
+    club = f"https://vk.com/club{abs(int(group_id))}" if group_id else None
+    lines = [
+        "💬 Чаты Зоны",
+        "",
+        "📢 Новости и страница сообщества:",
+        club if club else "— ссылка появится, когда сообщество откроет страницу.",
+        "",
+        "🛡️ Чат группировки открывает её командир; ссылку уточняй у лидера.",
+    ]
+    await bot.send_message(
+        int(event.peer_id),
+        "\n".join(lines),
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
+    )
+
+
+async def _pda_exchange(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    text = (
+        "🤝 Обмен\n\n"
+        "• Перевод RU: pay <ник|ид> <сумма> (комиссия 20%).\n"
+        "• Вызвать на дуэль: «👥 Игроки» → «⚔️ Вызвать» или текстом: дуэль <ник|ид>."
+    )
+    await bot.send_message(
+        int(event.peer_id),
+        text,
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
+    )
+
+
+async def _pda_deaths(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import build_death_log_text
+
+    text = build_death_log_text(storage, int(event.user_id))
+    await bot.send_message(
+        int(event.peer_id),
+        text,
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
+    )
+
+
+async def _pda_referral(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    await _referral_info(bot, storage, event)
 
 
 # ---------------------------------------------------------------------------
@@ -166,21 +244,21 @@ async def _pda_stats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None
         await bot.send_message(event.peer_id, "Сначала создай персонажа.")
         return
     text = build_player_stats_text(storage, user_id)
-    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_pda_keyboard_for(storage, int(event.user_id)))
 
 
 async def _pda_find(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     from app.game_logic import build_artifact_find_log_text
 
     text = build_artifact_find_log_text(storage, int(event.user_id))
-    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_pda_keyboard_for(storage, int(event.user_id)))
 
 
 async def _pda_arts(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     from app.artifact_features import build_my_artifacts_text
 
     text = build_my_artifacts_text(storage, int(event.user_id))
-    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_pda_keyboard_for(storage, int(event.user_id)))
 
 
 async def _pda_drop(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -197,7 +275,7 @@ async def _pda_drop(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
         str(player.location),
         best_detector_base_chance(player) or 17,
     )
-    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_pda_keyboard_for(storage, int(event.user_id)))
 
 
 async def _pda_players(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -244,7 +322,9 @@ async def _pda_players_faction(
 async def _pda_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
     parts = payload.split(":")
     cmd = parts[1] if len(parts) > 1 else ""
-    if cmd == "stats":
+    if cmd == "menu":
+        await _pda_open(bot, storage, event)
+    elif cmd == "stats":
         await _pda_stats(bot, storage, event)
     elif cmd == "players":
         await _pda_players(bot, storage, event)
@@ -255,7 +335,13 @@ async def _pda_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payl
     elif cmd == "drop":
         await _pda_drop(bot, storage, event)
     elif cmd == "deaths":
-        await _death_log_open(bot, storage, event)
+        await _pda_deaths(bot, storage, event)
+    elif cmd == "chats":
+        await _pda_chats(bot, storage, event)
+    elif cmd == "exchange":
+        await _pda_exchange(bot, storage, event)
+    elif cmd == "referral":
+        await _pda_referral(bot, storage, event)
     elif cmd == "daily":
         await _daily_open(bot, storage, event)
     elif cmd == "notify":
@@ -4011,7 +4097,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.18"
+APP_VERSION = "1.0.19"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -5575,7 +5661,10 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     norm = text.strip()
     norm_lower = norm.lower()
     # Универсальная навигация и алиасы, чтобы reply-кнопки всегда срабатывали.
-    if norm_lower in ("профиль", "кпк", "пда", "паспорт"):
+    if norm_lower in ("кпк", "пда", "паспорт"):
+        await _pda_open(bot, storage, event)
+        return
+    if norm_lower in ("профиль",):
         await _profile(bot, storage, event)
         return
     if norm_lower in ("статус", "ст"):
@@ -5612,7 +5701,31 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await _cmd_sbor(bot, storage, event, " ".join(parts_cmd[1:]))
         return
     if norm in ("🧾 Профиль", "📟 КПК"):
-        await _profile(bot, storage, event)
+        # «📟 КПК» из главного меню открывает раздел, «🧾 Профиль» внутри КПК — сам профиль.
+        if norm == "📟 КПК":
+            await _pda_open(bot, storage, event)
+        else:
+            await _profile(bot, storage, event)
+    elif norm == "💬 Чаты":
+        await _pda_chats(bot, storage, event)
+    elif norm in ("🗺 Карта", "карта"):
+        await _locmap_zonemap(bot, storage, event)
+    elif norm in ("📍 Локация", "локация"):
+        await _walk_open(bot, storage, event)
+    elif norm in ("👥 Игроки", "игроки"):
+        await _pda_players(bot, storage, event)
+    elif norm in ("🤝 Обмен", "обмен"):
+        await _pda_exchange(bot, storage, event)
+    elif norm in ("💎 Находки", "находки"):
+        await _pda_find(bot, storage, event)
+    elif norm in ("💎 Арты", "арты", "мои арты"):
+        await _pda_arts(bot, storage, event)
+    elif norm in ("📊 Дроп", "дроп"):
+        await _pda_drop(bot, storage, event)
+    elif norm in ("📊 Статистика", "статистика"):
+        await _pda_stats(bot, storage, event)
+    elif norm == "🔗 Реферальная система":
+        await _pda_referral(bot, storage, event)
     elif norm == "📡 Статус":
         await _status(bot, storage, event)
     elif norm == "🎒 Инвентарь":
@@ -5843,7 +5956,7 @@ async def _referral_info(bot: VkMessenger, storage: Storage, event: VkEvent) -> 
     await bot.send_message(
         int(event.peer_id),
         "\n".join(lines),
-        reply_markup=inline_keyboard([("⬅️ В меню", "ref:exit")]),
+        reply_markup=inline_keyboard([("📟 В КПК", "pda:menu")]),
     )
 
 
