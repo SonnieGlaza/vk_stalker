@@ -164,7 +164,10 @@ def inline_keyboard(*rows: Sequence) -> VkKeyboard:
     kb = VkKeyboard(one_time=False, inline=True)
     for i in range(0, len(flat), columns):
         for label, cb in flat[i : i + columns]:
-            kb.add_button(label, color=VkKeyboardColor.PRIMARY, payload=_payload(cb))
+            # ВАЖНО: для inline-клавиатур VK нужны кнопки типа callback, иначе
+            # нажатие шлёт текст кнопки в чат вместо события message_event
+            # (vk_api.add_button всегда создаёт type: text).
+            kb.add_callback_button(label, color=VkKeyboardColor.PRIMARY, payload=_payload(cb))
         if i + columns < len(flat):
             kb.add_line()
     return kb

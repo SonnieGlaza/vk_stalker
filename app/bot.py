@@ -1571,7 +1571,9 @@ async def _faction_callback(bot: VkMessenger, storage: Storage, event: VkEvent, 
     elif cmd == "warehouse":
         await _faction_warehouse(bot, storage, event)
     elif cmd == "tz":
-        await _faction_treasury_apply(bot, storage, event, "_".join(parts[2:]))
+        # Собираем через ":", чтобы amount совпал с ветками "dep:*"/"wd:*"
+        # (payload "faction:tz:dep:500" -> amount "dep:500").
+        await _faction_treasury_apply(bot, storage, event, ":".join(parts[2:]))
     elif cmd == "goals":
         await _faction_goals(bot, storage, event)
     elif cmd == "goalsclaim":
@@ -3830,7 +3832,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}

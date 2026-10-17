@@ -107,6 +107,7 @@ def test_inline_flows(env):
         "eco:smuggle:menu", "events:menu", "monolith:menu", "travel:open", "hunt:open",
         "sthunt:open", "stash:menu", "ref:info", "topup:menu", "topup:pack:1",
         "arena:move:up", "notify:toggle:emission", "eco:smuggle:status",
+        "faction:tz:dep:500", "faction:tz:wd:500", "faction:tz:depall", "faction:tz:wdall",
     ]
     _run(_click_cbs(st, m, flows))
 
@@ -185,6 +186,24 @@ def test_gender_choice_saved(env):
     _run(_handle_cb(bot, m, st, "reg:gender:blah", uid=another_uid))
     char2 = st.get_character(another_uid, refresh_energy=False)
     assert char2 is not None and char2.gender == "unknown"
+
+
+def test_keyboard_button_types(env):
+    """Inline-кнопки VK должны быть типа callback, иначе нажатие шлёт текст в чат (регрессия)."""
+    import json
+
+    from app.vk_platform import inline_keyboard, reply_keyboard
+
+    inline_kb = json.loads(inline_keyboard([("Жми", "x:1"), ("Ещё", "x:2")]).get_keyboard())
+    assert inline_kb["inline"] is True
+    for row in inline_kb["buttons"]:
+        for btn in row:
+            assert btn["action"]["type"] == "callback", f"inline-кнопка не callback: {btn}"
+            assert "payload" in btn["action"]
+
+    reply_kb = json.loads(reply_keyboard(["Обычная"]).get_keyboard())
+    assert reply_kb["inline"] is False
+    assert reply_kb["buttons"][0][0]["action"]["type"] == "text"
 
 
 async def _handle_cb(mod, m, st, payload, *, uid=UID):
