@@ -1637,8 +1637,10 @@ async def _buildings_callback(bot: VkMessenger, storage: Storage, event: VkEvent
 async def handle_event(bot: VkMessenger, event: VkEvent) -> None:
     storage = get_storage()
     if event.kind == "callback":
+        logger.info("VK callback: user=%s payload=%s", event.user_id, event.payload)
         await _handle_callback(bot, storage, event)
     else:
+        logger.info("VK message: user=%s text=%s", event.user_id, (event.text or "")[:80])
         await _handle_message(bot, storage, event)
 
 
