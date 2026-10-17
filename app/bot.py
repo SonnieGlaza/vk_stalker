@@ -721,7 +721,7 @@ def _arena_keyboard():
 
 
 async def _arena_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.arena_grid import start_arena
+    from app.arena_grid import get_arena_session, start_arena
 
     result = start_arena(storage, int(event.user_id))
     if not result.ok:
@@ -753,6 +753,7 @@ async def _arena_apply(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
         arena_move,
         arena_shoot,
         arena_use_medkit,
+        get_arena_session,
     )
 
     payload = (event.payload or "").strip()
@@ -783,6 +784,8 @@ async def _arena_apply(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
 
 
 async def _arena_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
+    from app.arena_grid import get_arena_session
+
     parts = payload.split(":")
     cmd = parts[1] if len(parts) > 1 else ""
     if cmd == "refresh":
@@ -1653,20 +1656,27 @@ async def handle_event(bot: VkMessenger, event: VkEvent) -> None:
 
 
 async def _daily_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import (
-        build_daily_login_overview_caption,
-        get_daily_login_state,
-        has_claimed_daily_login_today,
-    )
+    from app.game_logic import get_daily_login_state, has_claimed_daily_login_today
 
     user_id = int(event.user_id)
     state = get_daily_login_state(storage, user_id)
     already = has_claimed_daily_login_today(storage, user_id)
-    caption = build_daily_login_overview_caption(storage, user_id)
+    streak = int(state.get("streak") or 0)
+    next_day = streak + 1
+    rewards = {1: 150, 2: 200, 3: 300, 4: 400}
+    reward = rewards.get(next_day, 500)
+    extra = " + аптечка" if next_day % 7 == 0 else ""
+    caption = (
+        "📅 Ежедневная награда\n\n"
+        f"Текущий стрик: {streak} дн.\n"
+        f"Сегодня: +{reward} RU{extra}.\n\n"
+        "Рост: 1 дн. — 150, 2 — 200, 3 — 300, 4 — 400, 5+ — 500 RU\n"
+        "(каждый 7-й день стрика — ещё и аптечка). Стрик рвётся, если пропустить день."
+    )
     if already:
         await bot.send_message(
             int(event.peer_id),
-            caption,
+            caption + "\n\n✅ Награда за сегодня уже получена.",
             reply_markup=inline_keyboard([("ℹ️ Завтра вернёшься — стрик продолжится", "daily:info")]),
         )
         return
@@ -2395,6 +2405,9 @@ async def _hunt_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pay
 
     user_id = int(event.user_id)
     action = payload[len("hunt:"):].strip() if payload.startswith("hunt:") else payload
+    if action == "open":
+        await _hunt_open(bot, storage, event)
+        return
     if action == "exit":
         await _menu(bot, storage, event)
         return
@@ -2504,6 +2517,9 @@ async def _stash_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pa
 
     user_id = int(event.user_id)
     action = payload[len("sthunt:"):].strip() if payload.startswith("sthunt:") else payload
+    if action == "open":
+        await _stash_open(bot, storage, event)
+        return
     if action == "exit":
         await _menu(bot, storage, event)
         return
@@ -3804,6 +3820,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
+APP_VERSION = "1.0.3"
 
 
 def _init_admin_ids(settings: Any) -> None:
@@ -3832,9 +3849,7 @@ async def _admin_command(bot: VkMessenger, storage: Storage, event: VkEvent, low
         return uid, storage.get_character(uid, refresh_energy=False)
 
     parts = raw.split()
-    if len(parts) < 2:
-        return False
-    cmd = parts[0].lower()
+    cmd = parts[0].lower() if parts else ""
     args = parts[1:]
 
     if cmd in ("title", "/title", "titleoff", "/titleoff", "setseason", "/setseason", "confirm_topup", "/confirm_topup"):
@@ -5033,7 +5048,9 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
 
         await bot.send_message(int(event.peer_id), build_season_schedule_text(storage))
         return
-    norm = text.replace("\ufe0f", "").strip()
+    # Не вырезаем \ufe0f: reply-кнопки VK возвращают текст ровно как в клавиатуре,
+    # а наши тексты меню написаны с вариативным селектором эмодзи.
+    norm = text.strip()
     norm_lower = norm.lower()
     # Универсальная навигация и алиасы, чтобы reply-кнопки всегда срабатывали.
     if norm_lower in ("кпк", "пда", "паспорт"):
@@ -5102,11 +5119,13 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await _duel_open(bot, storage, event)
     elif norm in ("⚔️ Арена", "арена"):
         await _arena_open(bot, storage, event)
+    elif norm in ("📅 Ежедневка", "ежедневка"):
+        await _daily_open(bot, storage, event)
     elif norm in ("👥 Кооп", "кооп"):
         await _coop_open(bot, storage, event)
     elif norm in ("🪖 Рейды", "рейды"):
         await _raid_open(bot, storage, event)
-    elif norm in ("⚔️ Война", "война"):
+    elif norm in ("⚠️ Война", "⚔️ Война", "война"):
         await _war_open(bot, storage, event)
     elif norm in ("🔥 Захват точки", "захват точки"):
         await _war_open(bot, storage, event)
