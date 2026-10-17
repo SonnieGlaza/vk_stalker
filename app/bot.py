@@ -3830,7 +3830,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.11"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4203,6 +4203,7 @@ async def _cmd_sbor(bot: VkMessenger, storage: Storage, event: VkEvent, text: st
     for row in storage.list_faction_members(player.faction):
         try:
             await bot.send_message(int(row["telegram_id"]), message)
+            await asyncio.sleep(0.05)  # анти-флуд VK при рассылке по группировке
             sent += 1
         except Exception as exc:
             logger.debug("sbor notify failed: %s", exc)
@@ -5081,6 +5082,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
                 for user_id in storage.list_player_ids():
                     try:
                         await bot.send_message(int(user_id), season_message)
+                        await asyncio.sleep(0.05)  # анти-флуд VK при массовой рассылке
                     except Exception as exc:
                         logger.debug("season notify failed (%s): %s", user_id, exc)
                 # VK-аналог наград: титулы топ-3 завершённого сезона.
@@ -5158,6 +5160,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
                 for user_id in storage.list_player_ids():
                     try:
                         await bot.send_message(int(user_id), text)
+                        await asyncio.sleep(0.05)  # анти-флуд VK
                     except Exception as exc:
                         logger.debug("event notify failed (%s): %s", user_id, exc)
         except Exception:
@@ -5172,6 +5175,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
                     for uid in ids:
                         try:
                             await bot.send_message(int(uid), text)
+                            await asyncio.sleep(0.05)  # анти-флуд VK
                         except Exception as exc:
                             logger.debug("zone event notify failed (%s): %s", uid, exc)
             except Exception as exc:
