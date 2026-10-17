@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from app.config import Settings, load_settings
@@ -149,16 +150,22 @@ async def _status(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     from app.game_logic import effective_max_health
     from app.vk_titles import title_prefix
 
-    player = storage.get_character(int(event.user_id), refresh_energy=True)
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа.")
         return
-    nick = title_prefix(storage, int(event.user_id), player.nickname)
-    await bot.send_message(
-        event.peer_id,
-        f"📡 {nick}\nHP {player.health}/{effective_max_health(player)}\n"
-        f"Энергия {player.energy}/{player.max_energy}\nЛокация: {player.location}",
-    )
+    try:
+        nick = title_prefix(storage, user_id, player.nickname)
+        max_hp = effective_max_health(player)
+        text = (
+            f"📡 {nick}\nHP {player.health}/{max_hp}\n"
+            f"Энергия {player.energy}/{player.max_energy}\nЛокация: {player.location}"
+        )
+    except Exception as exc:
+        logger.warning("status render failed (%s): %s", user_id, exc, exc_info=True)
+        text = f"📡 {player.nickname}\nHP {player.health}/100\nЛокация: {player.location}"
+    await bot.send_message(event.peer_id, text, reply_markup=_menu_keyboard())
 
 
 async def _inventory(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -3823,7 +3830,10 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
+
+# Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
+_offline_death_notify: dict[int, float] = {}
 
 
 def _init_admin_ids(settings: Any) -> None:
@@ -5179,6 +5189,11 @@ async def _zone_tick(bot: VkMessenger) -> None:
                             continue
                         if _player_in_tactical_session(storage, user_id):
                             continue
+                        # Антиспам: если уже уведомляли о смерти недавно — респавним тихо.
+                        if time.time() - _offline_death_notify.get(user_id, 0) < 1800:
+                            respawn_character(storage, user_id)
+                            continue
+                        _offline_death_notify[user_id] = time.time()
                         result = respawn_character(storage, user_id)
                         await bot.send_message(
                             user_id,
