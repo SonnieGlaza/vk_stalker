@@ -303,3 +303,111 @@ def test_market_order_auto_confirm(env):
     assert result2 and "не совпала" in result2
     assert st.get_meta(f"{bot.TOPUP_ORDER_PREFIX}{UID}") is not None
     assert st.get_character(UID, refresh_energy=False).money == after
+
+
+def test_pda_sections_respond(env):
+    """Все разделы КПК (статистика/журналы/справка) отвечают текстом."""
+    st, m = env
+    flows = [
+        "pda:stats", "pda:find", "pda:arts", "pda:drop", "pda:info",
+        "pda:deaths", "pda:daily", "pda:notify", "locmap:zonemap", "travel:open",
+    ]
+    _run(_click_cbs(st, m, flows))
+
+
+def test_pda_players_flow(env):
+    """КПК → Игроки: список группировок и страница фракции с кнопками дуэли."""
+    st, m = env
+    st.create_character(UID + 1, "Соперник", "male")
+    st.set_faction(UID + 1, "Долг")
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("pda:players"))
+        merged = _merged(m.sent)
+        assert "Игроки Зоны" in merged and "Долг" in merged, merged[:200]
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("players:f:Долг:0"))
+        merged = _merged(m.sent)
+        assert "Соперник" in merged and "Не понял" not in merged, merged[:200]
+
+    _run(run())
+
+
+def test_kpk_keyboard_has_all_sections(env):
+    """Под карточкой КПК все разделы ТГ-КПК (payload-кнопки)."""
+    import json
+
+    kb = json.loads(bot._kpk_keyboard().get_keyboard())
+    cbs = set()
+    for row in kb["buttons"]:
+        for btn in row:
+            cbs.add(json.loads(btn["action"]["payload"])["cb"])
+    for want in (
+        "pda:stats", "pda:players", "pda:find", "pda:arts", "pda:drop",
+        "pda:deaths", "pda:daily", "pda:notify", "locmap:zonemap",
+        "travel:open", "ref:info", "pda:info",
+    ):
+        assert want in cbs, f"в КПК нет кнопки {want}"
+
+
+def test_info_text_full(env):
+    """«ℹ️ Информация» — полная справка как в ТГ (команды, механики, маркет)."""
+    text = bot._build_info_text()
+    for part in (
+        "/menu", "/info", "/season", "/respawn", "pay [ид|ник]",
+        "Переходы", "Выброс", "Контрабанда", "Рейды", "Сезон рейтинга",
+        "VK Market", "Реферал",
+    ):
+        assert part in text, f"в справке нет: {part}"
+    # Реальный вывод через кнопку «ℹ️ Информация».
+    st, m = env
+    flows = ["ℹ️ Информация", "/info"]
+    _run(_click_texts(st, m, flows))
+
+
+def test_send_photo_fallback_text(env):
+    """Если картинка не загрузилась — уходит fallback-текст с клавиатурой, игра не молчит."""
+    from app.vk_platform import VkMessenger
+
+    class M:
+        def __init__(self):
+            self.sent = []
+
+        async def send_message(self, chat_id, text, *, reply_markup=None, **kw):
+            self.sent.append((int(chat_id), str(text or "")))
+            return 7
+
+    m = M()
+    mid = _run(VkMessenger._photo_fallback(m, 42, "подпись", None, "запасной текст"))
+    assert mid == 7
+    assert m.sent and "запасной текст" in m.sent[0][1]
+    assert m.sent[0][0] == 42
+    # Без fallback-текста отдаём подпись; если пусто — ничего не шлём.
+    m2 = M()
+    assert _run(VkMessenger._photo_fallback(m2, 42, "", None, None)) is None
+    assert not m2.sent
+
+
+def test_normalize_photo_downscales(env):
+    """Пережатие картинки под VK: RGBA → RGB, огромные размеры — в лимит."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    from app.vk_platform import _normalize_photo
+
+    img = Image.new("RGBA", (5000, 5000), (10, 20, 30, 255))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    out = _normalize_photo(buf.getvalue())
+    assert out, "нормализация не дала результат"
+    im2 = Image.open(BytesIO(out))
+    assert max(im2.size) <= 4000, f"размер не уменьшен: {im2.size}"
+    assert im2.mode == "RGB"
+
+
+def test_players_unknown_payload_safe(env):
+    """Мусорный players-payload не роняет диспетчер."""
+    st, m = env
+    _run(_click_cbs(st, m, ["players:f:НетТаких:999", "players:root"]))

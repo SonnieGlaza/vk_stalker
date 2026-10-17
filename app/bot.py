@@ -110,12 +110,23 @@ async def _menu(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     await bot.send_message(event.peer_id, "📟 Выбери раздел:", reply_markup=_menu_keyboard())
 
 
+def _kpk_keyboard():
+    """Кнопки разделов КПК под карточкой (как в ТГ — КПК это целый раздел)."""
+    return inline_keyboard(
+        [("📊 Статистика", "pda:stats"), ("👥 Игроки", "pda:players")],
+        [("💎 Находки", "pda:find"), ("💎 Арты", "pda:arts"), ("📊 Дроп", "pda:drop")],
+        [("☠️ Смерти", "pda:deaths"), ("📅 Ежедневка", "pda:daily"), ("🔔 Уведомления", "pda:notify")],
+        [("🗺 Карта Зоны", "locmap:zonemap"), ("🗺 Переходы", "travel:open")],
+        [("🔗 Реферальная система", "ref:info"), ("ℹ️ Информация", "pda:info")],
+    )
+
+
 async def _kpk(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     player = storage.get_character(int(event.user_id), refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
         return
-    kb = inline_keyboard([("🔗 Реферальная система", "ref:info")])
+    kb = _kpk_keyboard()
     try:
         from app.profile_card import build_character_card
         from app.vk_titles import title_prefix
@@ -124,7 +135,13 @@ async def _kpk(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
         # Карточка PNG уже содержит весь профиль — подпись делаем короткой,
         # чтобы VK не дублировал полный текст (в подписи и под фото).
         nick = title_prefix(storage, int(event.user_id), player.nickname)
-        await bot.send_photo(event.peer_id, card_png, caption=("🪪 " + nick).strip(), reply_markup=kb)
+        await bot.send_photo(
+            event.peer_id,
+            card_png,
+            caption=("🪪 " + nick).strip(),
+            reply_markup=kb,
+            fallback_text=_profile_caption(player),
+        )
     except Exception as exc:
         logger.warning("profile card render failed: %s", exc)
         await bot.send_message(event.peer_id, _profile_caption(player), reply_markup=kb)
@@ -144,6 +161,131 @@ def _profile_caption(player: Any) -> str:
         f"📍 Локация: {player.location}\n"
         f"❤️ HP: {player.health}/{effective_max_health(player)}  ⚡ Энергия: {player.energy}/{player.max_energy}"
     )
+
+
+# ---------------------------------------------------------------------------
+# КПК: разделы под карточкой (аналог ТГ-КПК: статистика, игроки, журналы, карта)
+# ---------------------------------------------------------------------------
+
+
+async def _pda_stats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import build_player_stats_text
+
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        await bot.send_message(event.peer_id, "Сначала создай персонажа.")
+        return
+    text = build_player_stats_text(storage, user_id)
+    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+
+
+async def _pda_find(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import build_artifact_find_log_text
+
+    text = build_artifact_find_log_text(storage, int(event.user_id))
+    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+
+
+async def _pda_arts(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.artifact_features import build_my_artifacts_text
+
+    text = build_my_artifacts_text(storage, int(event.user_id))
+    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+
+
+async def _pda_drop(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.artifact_features import build_artifact_drop_table_text
+    from app.game_logic import best_detector_base_chance
+
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        await bot.send_message(event.peer_id, "Сначала создай персонажа.")
+        return
+    text = build_artifact_drop_table_text(
+        storage,
+        str(player.location),
+        best_detector_base_chance(player) or 17,
+    )
+    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+
+
+async def _pda_players(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import build_players_root_text
+
+    text, items = build_players_root_text(storage)
+    rows: list[list] = []
+    for faction_key, title, count in items:
+        rows.append([(f"{title} ({count})", f"players:f:{faction_key}:0")])
+    if not rows:
+        rows.append([("Игроков пока нет", "pda:players")])
+    rows.append([("⬅️ В меню", "walk:exit")])
+    await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*rows))
+
+
+async def _pda_players_faction(
+    bot: VkMessenger, storage: Storage, event: VkEvent, faction_key: str, page: int = 0
+) -> None:
+    from app.game_logic import build_players_faction_page_text
+    from app.vk_titles import title_prefix
+
+    user_id = int(event.user_id)
+    text, safe_key, safe_page, total_pages, page_players = build_players_faction_page_text(
+        storage, faction_key, page
+    )
+    rows: list[list] = []
+    for row in page_players or []:
+        tid = int(row.get("telegram_id") or 0)
+        if not tid or tid == user_id:
+            continue
+        nick = str(row.get("nickname") or f"id{tid}")
+        rows.append([(f"⚔️ Вызвать: {title_prefix(storage, tid, nick)}", f"duel:start:{tid}")])
+    nav: list[tuple[str, str]] = []
+    if safe_page > 0:
+        nav.append(("⬅️", f"players:f:{safe_key}:{safe_page - 1}"))
+    nav.append((f"{safe_page + 1}/{total_pages}", f"players:f:{safe_key}:{safe_page}"))
+    if safe_page < total_pages - 1:
+        nav.append(("➡️", f"players:f:{safe_key}:{safe_page + 1}"))
+    rows.append(nav)
+    rows.append([("👥 К группировкам", "pda:players"), ("⬅️ В меню", "walk:exit")])
+    await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*rows))
+
+
+async def _pda_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
+    parts = payload.split(":")
+    cmd = parts[1] if len(parts) > 1 else ""
+    if cmd == "stats":
+        await _pda_stats(bot, storage, event)
+    elif cmd == "players":
+        await _pda_players(bot, storage, event)
+    elif cmd == "find":
+        await _pda_find(bot, storage, event)
+    elif cmd == "arts":
+        await _pda_arts(bot, storage, event)
+    elif cmd == "drop":
+        await _pda_drop(bot, storage, event)
+    elif cmd == "deaths":
+        await _death_log_open(bot, storage, event)
+    elif cmd == "daily":
+        await _daily_open(bot, storage, event)
+    elif cmd == "notify":
+        await _notify_open(bot, storage, event)
+    elif cmd == "info":
+        await _cmd_help(bot, storage, event)
+
+
+async def _players_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
+    # players:root | players:f:<faction_key>:<page>
+    if payload == "players:root":
+        await _pda_players(bot, storage, event)
+        return
+    parts = payload.split(":")
+    if len(parts) >= 4 and parts[1] == "f":
+        page = int(parts[-1]) if parts[-1].isdigit() else 0
+        await _pda_players_faction(bot, storage, event, parts[2], page)
+        return
+    await _pda_players(bot, storage, event)
 
 
 async def _status(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -261,11 +403,18 @@ async def _walk_render(bot: VkMessenger, storage: Storage, event: VkEvent, playe
         if zone_actions:
             rows.extend(zone_actions)
         base_kb = _walk_keyboard()
+        fallback_text = (
+            f"🌲 {player.location}{zone_line}\n\n"
+            "Картинка временно не загрузилась — команды работают:\n"
+            "«🗺 Переходы» — смена локации, «📡 Поиск артов» — детектор, "
+            "«🏚 Схрон» — поиск хабара, стрелки — ход по локации."
+        )
         await bot.send_photo(
             event.peer_id,
             frame,
             caption=caption,
             reply_markup=inline_keyboard(*(rows + _walk_keyboard_rows())),
+            fallback_text=fallback_text,
         )
     except Exception as exc:
         logger.warning("walk render failed: %s", exc, exc_info=True)
@@ -635,13 +784,13 @@ async def _duel_send_frames(bot: VkMessenger, storage: Storage, session: Any, a_
     kb = _duel_fight_keyboard()
     try:
         png_a = render_duel_frame(storage, session, a_id)
-        await bot.send_photo(a_id, png_a, caption=caption, reply_markup=kb)
+        await bot.send_photo(a_id, png_a, caption=caption, reply_markup=kb, fallback_text=caption)
     except Exception as exc:
         logger.warning("duel frame a failed: %s", exc)
         await bot.send_message(a_id, caption, reply_markup=kb)
     try:
         png_b = render_duel_frame(storage, session, b_id)
-        await bot.send_photo(b_id, png_b, caption=caption, reply_markup=kb)
+        await bot.send_photo(b_id, png_b, caption=caption, reply_markup=kb, fallback_text=caption)
     except Exception as exc:
         logger.warning("duel frame b failed: %s", exc)
         await bot.send_message(b_id, caption, reply_markup=kb)
@@ -751,7 +900,7 @@ async def _arena_send_frame(bot: VkMessenger, storage: Storage, event: VkEvent, 
     kb = _arena_keyboard()
     try:
         png = render_arena_frame(storage, sess)
-        await bot.send_photo(int(event.peer_id), png, caption=caption, reply_markup=kb)
+        await bot.send_photo(int(event.peer_id), png, caption=caption, reply_markup=kb, fallback_text=caption)
     except Exception as exc:
         logger.warning("arena frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), caption, reply_markup=kb)
@@ -953,7 +1102,7 @@ async def _coop_send_frames(bot: VkMessenger, storage: Storage, event: VkEvent, 
         except Exception:
             png = None
         if png:
-            await bot.send_photo(int(pid), png, caption=caption, reply_markup=_coop_fight_keyboard())
+            await bot.send_photo(int(pid), png, caption=caption, reply_markup=_coop_fight_keyboard(), fallback_text=caption)
         else:
             await bot.send_message(int(pid), caption, reply_markup=_coop_fight_keyboard())
 
@@ -1120,7 +1269,7 @@ async def _raid_send_frame_to(bot: VkMessenger, storage: Storage, user_id: int) 
         caption = "🪖 Тактический рейд"
     try:
         png = render_rgrid_frame_local(storage, sess, int(user_id))
-        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_raid_fight_keyboard())
+        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_raid_fight_keyboard(), fallback_text=caption)
     except Exception as exc:
         logger.warning("raid frame failed for %s: %s", user_id, exc)
         await bot.send_message(int(user_id), caption, reply_markup=_raid_fight_keyboard())
@@ -1289,7 +1438,7 @@ async def _war_ncap_send_frames(bot: VkMessenger, storage: Storage, event: VkEve
             caption = "🎯 Захват точки"
         try:
             png = render_ncap_frame(storage, sess, int(pid))
-            await bot.send_photo(int(pid), png, caption=caption, reply_markup=kb)
+            await bot.send_photo(int(pid), png, caption=caption, reply_markup=kb, fallback_text=caption)
         except Exception:
             await bot.send_message(int(pid), caption, reply_markup=kb)
 
@@ -1374,7 +1523,7 @@ async def _war_cwar_send_frame_to(bot: VkMessenger, storage: Storage, user_id: i
         caption = "⚔️ Тактический штурм"
     try:
         png = render_cwar_frame(storage, sess, int(user_id))
-        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_war_cwar_keyboard())
+        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_war_cwar_keyboard(), fallback_text=caption)
     except Exception as exc:
         logger.warning("cwar frame failed for %s: %s", user_id, exc)
         await bot.send_message(int(user_id), caption, reply_markup=_war_cwar_keyboard())
@@ -2158,7 +2307,7 @@ async def _qmission_send_frame(
     text = caption if not note else f"{caption}\n\n{note}"
     kb = _qmission_keyboard(storage, int(event.user_id))
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=kb)
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=kb, fallback_text=text)
     except Exception as exc:
         logger.warning("quest frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=kb)
@@ -2424,7 +2573,7 @@ async def _hunt_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_hunt_keyboard())
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_hunt_keyboard(), fallback_text=text)
     except Exception as exc:
         logger.warning("hunt frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_hunt_keyboard())
@@ -2537,7 +2686,7 @@ async def _stash_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_stash_keyboard())
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_stash_keyboard(), fallback_text=text)
     except Exception as exc:
         logger.warning("stash frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_stash_keyboard())
@@ -2852,7 +3001,7 @@ async def _lab_send_frame(
     if session is not None:
         stage = str(session.stage or stage or "combat")
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lab_stage_keyboard(stage))
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lab_stage_keyboard(stage), fallback_text=text)
     except Exception as exc:
         logger.warning("lab frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_lab_stage_keyboard(stage))
@@ -3304,7 +3453,7 @@ async def _smuggle_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_smuggle_kb())
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_smuggle_kb(), fallback_text=text)
     except Exception as exc:
         logger.warning("smuggle frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_smuggle_kb())
@@ -3573,6 +3722,15 @@ async def _locmap_zonemap(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     player = storage.get_character(int(event.user_id), refresh_energy=False)
     if player is None:
         return
+    caption = (
+        "🗺 Карта Зоны\n"
+        "Кольцо = тип точки (база/ресурсы/интерес), заливка = группировка-контролёр.\n"
+        "Жёлтая рамка — твоя локация, «+» — территория твоей группировки (NPC — сила)."
+    )
+    kb = inline_keyboard(
+        [("🗺 Переходы", "travel:open"), ("🔄 Обновить", "locmap:zonemap")],
+        [("⬅️ В меню", "walk:exit")],
+    )
     try:
         image = build_zone_map_image(
             storage.get_locations(),
@@ -3580,10 +3738,16 @@ async def _locmap_zonemap(bot: VkMessenger, storage: Storage, event: VkEvent) ->
             player_faction=player.faction,
             show_markers=True,
         )
-        await bot.send_photo(int(event.peer_id), image, caption="🗺 Карта Зоны: точки и контроль группировок.")
+        await bot.send_photo(
+            int(event.peer_id),
+            image,
+            caption=caption,
+            reply_markup=kb,
+            fallback_text=caption,
+        )
     except Exception as exc:
         logger.warning("zone map failed: %s", exc)
-        await bot.send_message(int(event.peer_id), "Карта Зоны недоступна.")
+        await bot.send_message(int(event.peer_id), caption, reply_markup=kb)
 
 
 async def _locmap_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
@@ -3720,7 +3884,7 @@ async def _lair_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lair_kb())
+        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lair_kb(), fallback_text=text)
     except Exception as exc:
         logger.warning("lair frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_lair_kb())
@@ -3858,7 +4022,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.16"
+APP_VERSION = "1.0.17"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4143,21 +4307,115 @@ def _faction_from_word(word: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-async def _cmd_help(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    text = (
-        "📖 Как играть\n\n"
-        "• Кнопки меню — основное; текстом можно:\n"
-        "  /menu — меню, /info — эта справка, /cancel — отменить ввод\n"
-        "  /respawn — возродиться (только если HP=0)\n"
-        "  дуэль <ник/ид> — вызвать на дуэль\n"
-        "  pay <ник/ид> <сумма> — перевод RU (комиссия 20%)\n"
-        "  сбор <текст> — лидеру оповестить группировку\n\n"
-        "• Секции: КПК, Инвентарь, Вылазка, Торговец, Группировка, Задания,\n"
-        "  Рейды, Война (с Атакой Монолита), Рейтинг, Барахолка, Контрабанда,\n"
-        "  События, Дуэль, Арена, Кооп, Ежедневка, Пополнение, Уведомления,\n"
-        "  Смерти, Обучение.\n"
-        "• Админ-команды: give/top/fixme/setfaction/leader/settravel/всем и др."
+def _build_info_text() -> str:
+    """Полная справка по боту — порт ТГ-справки с адаптацией под VK."""
+    from app.game_logic import (
+        ARTIFACT_SEARCH_ENERGY_COST,
+        BASE_POINT_INCOME_PER_HOUR,
+        BAZAAR_FACTION_TAX_PERCENT,
+        DAILY_CONTRACT_BONUS_PERCENT,
+        DEPOT_RAID_ENERGY_COST,
+        DUEL_LOSER_HP_REMAINING,
+        DUEL_LOSER_MONEY_CAP,
+        DUEL_LOSER_MONEY_PERCENT,
+        RATING_REWARD,
+        REFERRAL_INVITER_BONUS_RU,
+        RESOURCE_POINT_INCOME_PER_HOUR,
+        TRAVEL_SPEED_BICYCLE,
+        TRAVEL_SPEED_NIVA,
+        TRAVEL_SPEED_TRUCK,
+        TRANSFER_FEE_PERCENT,
+        WAR_ALLY_SUCCESS_PAY_RU,
+        WAR_ALLY_SUCCESS_RATING,
+        WAR_LOBBY_ENERGY_COST,
+        WAR_SUCCESS_PAY_RU,
+        WEEKLY_CONTRACT_BONUS_PERCENT,
     )
+    from app.neutral_capture import NCAP_MIN_MEMBERS
+
+    try:
+        from app.game_logic import TRANSPORT_QUEST_REWARD_MULT
+    except ImportError:
+        TRANSPORT_QUEST_REWARD_MULT = {}
+
+    mult = TRANSPORT_QUEST_REWARD_MULT or {}
+
+    return (
+        "ℹ️ Информация по игре\n\n"
+        "Разделы меню:\n"
+        "• 📟 КПК — карточка профиля и под ней: статистика, игроки, находки, "
+        "арты, дроп, карта Зоны, переходы, ежедневка, уведомления, рефералка.\n"
+        "• 🏕 Вылазка — стрелки по локации и кнопки зоны (торговец/аптека, "
+        "поиск артов, схрон, лаборатория, логово, блокпост), «🗺 Переходы» — смена локации.\n"
+        "  ⚔️ Арена — тренировка 8×8 на базе; 👥 кооп до 3 игроков; "
+        "🪖 рейды — тактика 9×9 на логово/склад врага.\n"
+        "• 👥 Группировка — склад/казна/гараж, звания, постройки, клановые задачи, союзы.\n"
+        "• 🏦 Барахолка — биржа расходников/артефактов/топлива, рынок снаряжения "
+        f"(налог {BAZAAR_FACTION_TAX_PERCENT}% в казну ГП продавца), перевозка контрабанды.\n"
+        "• 📋 Задания — контракты с переездом (🗓 контракты дня и 📅 недели "
+        f"с бонусом +{DAILY_CONTRACT_BONUS_PERCENT}%/+{WEEKLY_CONTRACT_BONUS_PERCENT}% RU); "
+        "контрабанда — рисковый курьерский рейс.\n\n"
+        "Команды (текстом в чат):\n"
+        "• /menu — главное меню.\n"
+        "• /cancel — отменить ввод суммы/количества.\n"
+        "• /info — эта справка.\n"
+        "• /season — когда закончится сезонный рейтинг (дата и время).\n"
+        f"• pay [ид|ник] [сумма] — перевод RU (комиссия {TRANSFER_FEE_PERCENT}%).\n"
+        "• дуэль [ид|ник] — вызвать на дуэль (ID виден в «👥 Игроки»).\n"
+        f"  Проигравший: HP {DUEL_LOSER_HP_REMAINING}, −{DUEL_LOSER_MONEY_PERCENT}% денег "
+        f"(макс. {DUEL_LOSER_MONEY_CAP} RU).\n"
+        "• /respawn — возродиться, если HP=0.\n"
+        "• сбор [текст] — оповестить бойцов (только командир группировки).\n\n"
+        "Механики:\n"
+        "• 🗺 Переходы: 1 игровая минута ≈ 10 сек реально; "
+        f"пешком ×1, велосипед ×{TRAVEL_SPEED_BICYCLE:g}, Нива ×{TRAVEL_SPEED_NIVA:g} + бензин, "
+        f"грузовик ×{TRAVEL_SPEED_TRUCK:g} + дизель. "
+        f"Награда контракта: пешком ×{mult.get('foot', 1):g}, велосипед ×{mult.get('bicycle', 2):g}, "
+        f"Нива ×{mult.get('niva', 4):g}, грузовик ×{mult.get('truck', 6):g}. "
+        "На арендованной технике нельзя слезть и идти пешком.\n"
+        "• ☢️ Выброс: предупреждения за 60 и 30 мин, затем волны убийства по зонам — "
+        "сначала опасные (Радар, Рыжий лес, Янтарь), на базе всегда безопасно.\n"
+        "• 🚚 Контрабанда: перевозка; ограбление в пути = провал; лут важнее чистого RU.\n"
+        "• 🏚 Рейды (тактика 9×9, 2–5 бойцов): логово, склад/гараж врага; "
+        f"−18 энергии (логово) / −{DEPOT_RAID_ENERGY_COST} (склад/гараж); "
+        "1 аптечка/боец; HP после боя сохраняется. Успех логова: 1400 + 180×выживших RU в казну; "
+        "провал: −110 RU и −8 рейтинга каждому.\n"
+        f"• 💰 Пассив казны: ресурсы {RESOURCE_POINT_INCOME_PER_HOUR} RU/ч, "
+        f"база {BASE_POINT_INCOME_PER_HOUR} RU/ч.\n"
+        f"• 🔗 Реферал: пригласившему +{REFERRAL_INVITER_BONUS_RU} RU, другу — стартовый набор.\n"
+        "• 🛏 Спальник — ×2 реген энергии.\n"
+        f"• 💎 Артефакты — «📡 Поиск артефактов»: тактическая охота "
+        f"(−{ARTIFACT_SEARCH_ENERGY_COST} энергии, до 24 ходов, нужен детектор).\n"
+        f"• ⚔️ Война: нейтральные — захват от {NCAP_MIN_MEMBERS} бойцов на 6×6, занятые — "
+        f"лобби (−{WAR_LOBBY_ENERGY_COST} энергии, 1 аптечка/боец, хост +{WAR_SUCCESS_PAY_RU} RU/"
+        f"+{RATING_REWARD.get('war_success', 15)} рейт., союзники +{WAR_ALLY_SUCCESS_PAY_RU} RU/"
+        f"+{WAR_ALLY_SUCCESS_RATING} рейт.).\n"
+        "• ⚔️ Арена: на домашней базе, поле 8×8, бесконечные волны; 3 аптечки арены (+45 HP); "
+        "тренировка без штрафов смерти; награда как лёгкое задание.\n"
+        "• 🎖 Скины по рейтингу: 0 / 500 / 2000 / 5000.\n"
+        "• 📅 Сезон рейтинга: раз в 14 дней топ-3 получает эксклюзивную снарягу "
+        "(🥇 пушка+броня, 🥈 пушка, 🥉 броня; у торговца не продаётся); топ-3 ГП — RU в казну.\n"
+        "• ⭐ Пополнение: «⭐ Пополнить» → товары сообщества (VK Market) "
+        "149/249/499/999 ₽, на карман или в казну ГП; после оплаты RU зачисляются автоматически.\n\n"
+        "Чаты и поддержка: уточняй у администратора сообщества."
+    )
+
+
+async def _cmd_help(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    try:
+        text = _build_info_text()
+    except Exception as exc:
+        logger.warning("info text build failed: %s", exc)
+        text = (
+            "📖 Как играть\n\n"
+            "• /menu — главное меню, /info — эта справка, /cancel — отменить ввод,\n"
+            "  /respawn — возродиться, /season — конец сезона,\n"
+            "  pay <ник/ид> <сумма> — перевод RU, дуэль <ник/ид> — вызов на дуэль,\n"
+            "  сбор <текст> — лидеру оповестить группировку.\n\n"
+            "• Секции: КПК, Инвентарь, Вылазка (с переходами), Торговец, Группировка, "
+            "Задания, Рейды, Рейтинг, Барахолка, Контрабанда, События, Дуэль, Арена, "
+            "Кооп, Ежедневка, Пополнение, Уведомления, Смерти, Обучение."
+        )
     await bot.send_message(int(event.peer_id), text)
 
 
@@ -5413,7 +5671,7 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     elif norm in ("☢ Атака Монолита", "атака монолита"):
         await _monolith_menu(bot, storage, event)
     elif norm == "ℹ️ Информация":
-        await bot.send_message(event.peer_id, "ℹ️ Зона ждёт. Разделы в меню ниже.")
+        await _cmd_help(bot, storage, event)
     elif norm in ("⚔️ Дуэль", "дуэль"):
         await _duel_open(bot, storage, event)
     elif norm in ("⚔️ Арена", "арена"):
@@ -5768,6 +6026,12 @@ async def _handle_callback(bot: VkMessenger, storage: Storage, event: VkEvent) -
         return
     if payload.startswith("ref:"):
         await _referral_callback(bot, storage, event, payload)
+        return
+    if payload.startswith("pda:"):
+        await _pda_callback(bot, storage, event, payload)
+        return
+    if payload.startswith("players:"):
+        await _players_callback(bot, storage, event, payload)
         return
     if payload.startswith("walk:"):
         cmd = payload.split(":")[-1]

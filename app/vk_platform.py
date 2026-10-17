@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
+import io
 import json
 import logging
 import re
@@ -177,6 +178,45 @@ def keyboard_to_json(kb: VkKeyboard | None) -> str | None:
     return kb.get_keyboard() if kb is not None else None
 
 
+# Ограничение VK на размеры картинки в сообщении (ширина/высота): больше 4000 px
+# грузить смысла нет — клиент всё равно показывает превью, а сервер может отклонить.
+_PHOTO_MAX_DIM = 4000
+
+
+def _normalize_photo(data: bytes) -> bytes | None:
+    """PIL: пережатие картинки под VK-загрузку — RGB, разумные размеры, JPEG.
+
+    Чинит PNG с альфой/палитрой, мусорные моды и слишком большие размеры:
+    именно такие картинки VK часто не принимает в сообщения.
+    """
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        if img.mode in ("RGBA", "LA", "P"):
+            rgba = img.convert("RGBA")
+            bg = Image.new("RGBA", rgba.size, (16, 18, 22, 255))
+            img = Image.alpha_composite(bg, rgba).convert("RGB")
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        width, height = img.size
+        if width <= 0 or height <= 0:
+            return None
+        if width > _PHOTO_MAX_DIM or height > _PHOTO_MAX_DIM:
+            scale = _PHOTO_MAX_DIM / max(width, height)
+            img = img.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=88, optimize=True)
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("photo normalize failed: %s", exc)
+        return None
+
+
 # --------------------------------------------------------------------------
 # Мини-FSM
 # --------------------------------------------------------------------------
@@ -307,10 +347,18 @@ class VkMessenger:
 
         return sent
 
-    async def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, **unused: Any) -> int | None:
-        """Аналог bot.send_photo: фото — bytes/BytesIO/path; подпись — plain-текст."""
+    async def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, fallback_text: str | None = None, **unused: Any) -> int | None:
+        """Аналог bot.send_photo: фото — bytes/BytesIO/path; подпись — plain-текст.
+
+        Загрузка идёт каскадом, чтобы картинка ушла в любом случае:
+        1. штатный vk_api.photo_messages (старые серверы upload.php);
+        2. пережатие в JPEG (RGB, разумные размеры) и повтор;
+        3. картинка как документ с превью (docs.getMessagesUploadServer — стабильный путь,
+           работает и когда VK отдаёт новый v2/bulk_upload вместо upload.php);
+        если не помогло ничего и задан fallback_text — отправляем текст с клавиатурой,
+        чтобы игра не «молчала» без картинки.
+        """
         try:
-            data = bytes()
             if isinstance(photo, (str, Path)):
                 with open(photo, "rb") as fh:
                     data = fh.read()
@@ -320,26 +368,89 @@ class VkMessenger:
                 data = photo.read()
             else:
                 data = bytes(photo)
-
-
-            if not data:
-                logger.warning("send_photo: пустые данные фото (peer %s)", chat_id)
-                return None
-
-            bio = __import__("io").BytesIO(data)
-            bio.name = "photo.png"
-            resp = self._uploader.photo_messages([bio], peer_id=int(chat_id))
-
-            attachment = self._photo_attachment(resp, chat_id)
-            if not attachment:
-                return None
-            return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
-
-
-
-
         except Exception as exc:
-            logger.warning("send_photo failed (peer %s): %s", chat_id, exc)
+            logger.warning("send_photo: не прочиталось фото (peer %s): %s", chat_id, exc)
+            data = b""
+
+        if not data:
+            logger.warning("send_photo: пустые данные фото (peer %s)", chat_id)
+            return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
+
+        attachment = self._upload_photo_attachment(data, int(chat_id))
+        if attachment:
+            return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
+        return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
+
+    async def _photo_fallback(self, chat_id: int, caption: str | None, reply_markup: VkKeyboard | None, fallback_text: str | None) -> int | None:
+        """Если фото не ушло — отправляем подпись/текст с клавиатурой (игра не молчит)."""
+        text = fallback_text if fallback_text is not None else (caption or "")
+        if not text.strip():
+            logger.warning("send_photo: картинка не отправлена (peer %s), fallback пуст", chat_id)
+            return None
+        return await self.send_message(int(chat_id), text, reply_markup=reply_markup)
+
+    def _upload_photo_attachment(self, data: bytes, peer_id: int) -> str | None:
+        """Каскад загрузки картинки в сообщение; возвращает attachment (photo…/doc…) или None."""
+        # 1) штатный путь vk_api (upload.php)
+        attachment = self._upload_photo_messages(data, peer_id)
+        if attachment:
+            return attachment
+        # 2) пережатие в понятный VK JPEG и повтор
+        normalized = _normalize_photo(data)
+        if normalized is not None and normalized != data:
+            attachment = self._upload_photo_messages(normalized, peer_id)
+            if attachment:
+                return attachment
+        # 3) гарантированный запасной путь — изображение-документ (показывается превью)
+        attachment = self._upload_photo_document(data, peer_id)
+        if attachment:
+            logger.info("photo upload: запасной путь doc (peer %s)", peer_id)
+            return attachment
+        return None
+
+    def _upload_photo_messages(self, data: bytes, peer_id: int) -> str | None:
+        try:
+            bio = io.BytesIO(data)
+            bio.name = "photo.png"
+            resp = self._uploader.photo_messages([bio], peer_id=peer_id)
+            return self._photo_attachment(resp, peer_id)
+        except Exception as exc:
+            logger.debug("photo_messages upload failed (peer %s): %s", peer_id, exc)
+            return None
+
+    def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
+        """Картинка как документ с превью: docs.getMessagesUploadServer + docs.save."""
+        try:
+            server = self.vk.method("docs.getMessagesUploadServer", {"type": "doc", "peer_id": int(peer_id)})
+            upload_url = server.get("upload_url")
+            if not upload_url:
+                return None
+            files = {"file": ("photo.jpg", io.BytesIO(data), "image/jpeg")}
+            resp = self.vk.http.post(upload_url, files=files)
+            payload = resp.json()
+            file_token = str(payload.get("file") or "")
+            if not file_token:
+                logger.warning("docs upload: пустой file (peer %s): %s", peer_id, payload)
+                return None
+            saved = self.vk.method("docs.save", {"file": file_token})
+            doc = None
+            if isinstance(saved, dict):
+                doc = saved.get("doc") or {}
+            elif isinstance(saved, list) and saved:
+                doc = (saved[0] or {}).get("doc") or {}
+            if not isinstance(doc, dict):
+                return None
+            owner_id = int(doc.get("owner_id") or 0)
+            doc_id = int(doc.get("id") or 0)
+            if not owner_id or not doc_id:
+                return None
+            att = f"doc{owner_id}_{doc_id}"
+            access_key = str(doc.get("access_key") or "")
+            if access_key:
+                att += f"_{access_key}"
+            return att
+        except Exception as exc:
+            logger.warning("docs upload failed (peer %s): %s", peer_id, exc)
             return None
 
     def _photo_attachment(self, resp: Any, chat_id: int) -> str | None:
