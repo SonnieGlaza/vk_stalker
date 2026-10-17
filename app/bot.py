@@ -117,10 +117,13 @@ async def _kpk(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     kb = inline_keyboard([("🔗 Реферальная система", "ref:info")])
     try:
         from app.profile_card import build_character_card
+        from app.vk_titles import title_prefix
 
         card_png = build_character_card(player, storage=storage)
-        caption = _profile_caption(player)
-        await bot.send_photo(event.peer_id, card_png, caption=caption, reply_markup=kb)
+        # Карточка PNG уже содержит весь профиль — подпись делаем короткой,
+        # чтобы VK не дублировал полный текст (в подписи и под фото).
+        nick = title_prefix(storage, int(event.user_id), player.nickname)
+        await bot.send_photo(event.peer_id, card_png, caption=("🪪 " + nick).strip(), reply_markup=kb)
     except Exception as exc:
         logger.warning("profile card render failed: %s", exc)
         await bot.send_message(event.peer_id, _profile_caption(player), reply_markup=kb)
@@ -3820,7 +3823,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 
 def _init_admin_ids(settings: Any) -> None:
@@ -5426,7 +5429,16 @@ async def _create_by_nick(bot: VkMessenger, storage: Storage, event: VkEvent, te
     except NicknameTakenError:
         await bot.send_message(event.peer_id, "Такой ник занят. Попробуй другой:")
         return
-    await _start_referral_step(bot, storage, event, nickname)
+    await _gender_step(bot, storage, event)
+
+
+async def _gender_step(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Спросить пол персонажа (после ника, до реферала и группировки)."""
+    await bot.send_message(
+        int(event.peer_id),
+        "👤 Персонаж создан. Выбери пол:",
+        reply_markup=_gendre_keyboard(),
+    )
 
 
 async def _start_referral_step(bot: VkMessenger, storage: Storage, event: VkEvent, nickname: str | None = None) -> None:
