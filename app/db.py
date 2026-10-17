@@ -207,7 +207,17 @@ def connect(config: DbConfig) -> DbConnection:
         import psycopg
         from psycopg.rows import dict_row
 
-        raw = psycopg.connect(config.database_url, row_factory=dict_row)
+        # Короткий таймаут подключения и keepalive: если хостинговая БД временно
+        # недоступна, не висим и быстрее возвращаем ошибку (фоновые тики не застревают).
+        raw = psycopg.connect(
+            config.database_url,
+            row_factory=dict_row,
+            connect_timeout=8,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+        )
         return DbConnection(raw, "postgres")
 
     if not config.sqlite_path:
