@@ -4997,6 +4997,16 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     if fsm_state == "reg_referral":
         await _handle_referral_input(bot, storage, event, text)
         return
+    # Новичок без группировки: выбираем её кнопками (Долг/Свобода/Нейтралы/Бандиты).
+    if player.faction is None:
+        if await _apply_faction_choice(bot, storage, event, text):
+            return
+        await bot.send_message(
+            int(event.peer_id),
+            "Выбери группировку кнопками ниже:",
+            reply_markup=_faction_keyboard(),
+        )
+        return
     # Админ-команды (give / fixme / top / deleteplayer / title / setseason ...).
     lowered_word = lowered.split()[0] if lowered.split() else ""
     if lowered_word in (
@@ -5108,17 +5118,11 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await _topup_open(bot, storage, event)
     elif norm in ("🔥 Как не сдохнуть", "как не сдохнуть", "📘 Обучение", "обучение"):
         await _tutorial_open(bot, storage, event)
-    elif norm.startswith("🏛"):
-        await bot.send_message(event.peer_id, "Выбери группировку кнопками ниже.")
     else:
         await bot.send_message(event.peer_id, "Не понял. Используй кнопки меню.", reply_markup=_menu_keyboard())
 
 
-def faction_choice(text: str, storage: Storage, user_id: int, peer_id: int, bot: VkMessenger) -> None:
-    """Обработка reply-кнопки фракции во время регистрации.
-
-    При выборе кнопки «Долг/Свобода/Нейтралы/Бандиты» назначаем группировку.
-    """
+def _match_faction(text: str) -> str | None:
     clean = (text or "").strip().lower()
     mapping = {
         "🏛 долг": "Долг", "долг": "Долг",
@@ -5126,18 +5130,28 @@ def faction_choice(text: str, storage: Storage, user_id: int, peer_id: int, bot:
         "🧍 нейтралы": "Нейтралы", "нейтралы": "Нейтралы",
         "🔫 бандиты": "Бандиты", "бандиты": "Бандиты",
     }
-    faction = None
     for key, value in mapping.items():
         if key in clean:
-            faction = value
-            break
+            return value
+    return None
+
+
+async def _apply_faction_choice(bot: VkMessenger, storage: Storage, event: VkEvent, text: str) -> bool:
+    """Выбор группировки reply-кнопкой во время регистрации. True, если обработано."""
+    faction = _match_faction(text)
     if faction is None:
-        return
+        return False
     try:
-        storage.set_faction(user_id, faction)
-    except Exception:
-        return
-    bot.send_message(peer_id, f"Группировка выбрана: {faction} ✅", reply_markup=_menu_keyboard())
+        storage.set_faction(int(event.user_id), faction)
+    except Exception as exc:
+        logger.warning("set_faction failed (%s): %s", event.user_id, exc)
+        return True
+    await bot.send_message(
+        int(event.peer_id),
+        f"Группировка выбрана: {faction} ✅",
+        reply_markup=_menu_keyboard(),
+    )
+    return True
 
 
 async def _create_by_nick(bot: VkMessenger, storage: Storage, event: VkEvent, text: str) -> None:
