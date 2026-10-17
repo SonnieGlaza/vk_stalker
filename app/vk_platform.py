@@ -210,10 +210,22 @@ class VkMessenger:
 """
 
     def __init__(self, settings: Settings):
-        self.token = settings.vk_token
+        self.token = (settings.vk_token or "").strip()
         self.group_id = settings.group_id
+        if not self.token:
+            raise ValueError(
+                "VK_TOKEN пуст или не задан. Проверь файл .env на хостинге "
+                "(переменная VK_TOKEN) или переменные окружения и перезапусти бота."
+            )
         self.vk = vk_api.VkApi(token=self.token, api_version="5.131")
-        self.vk.auth(token_only=True)
+        try:
+            self.vk.auth(token_only=True)
+        except vk_api.exceptions.LoginRequired as exc:
+            raise ValueError(
+                "VK не принял токен (LoginRequired). Проверь, что VK_TOKEN — правами сообщества "
+                "(сообщения, фото, группы, Long Poll/Callback) и не просрочен. "
+                f"Длина токена в .env: {len(self.token)}."
+            ) from exc
         self._uploader = VkUpload(self.vk)
 
 
