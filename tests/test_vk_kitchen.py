@@ -206,6 +206,38 @@ def test_keyboard_button_types(env):
     assert reply_kb["buttons"][0][0]["action"]["type"] == "text"
 
 
+def test_message_event_answered(env):
+    """Нажатие inline-кнопки закрывается ответом messages.sendMessageEventAnswer."""
+    calls = []
+
+    class VkStub:
+        def method(self, name, params):
+            calls.append((name, params))
+
+    class M:
+        vk = VkStub()
+
+        async def send_message(self, *a, **kw):
+            return 1
+
+        async def send_photo(self, *a, **kw):
+            return 1
+
+    m = M()
+    ev = SimpleNamespace(
+        kind="callback", user_id=77, peer_id=77, text="", payload="x:1",
+        message_id=None, raw={"event_id": "event123", "user_id": 77, "peer_id": 77},
+    )
+    _run(bot._answer_message_event(m, ev))
+    assert calls and calls[0][0] == "messages.sendMessageEventAnswer"
+    assert calls[0][1]["event_id"] == "event123"
+    assert calls[0][1]["user_id"] == 77
+    # Без event_id в raw — тихий пропуск (не ломаем обработку).
+    ev2 = SimpleNamespace(kind="callback", user_id=77, peer_id=77, text="", payload="x:1", message_id=None, raw={})
+    _run(bot._answer_message_event(m, ev2))
+    assert len(calls) == 1
+
+
 async def _handle_cb(mod, m, st, payload, *, uid=UID):
     ev = SimpleNamespace(kind="callback", user_id=uid, peer_id=uid, text="", payload=payload, message_id=None, raw=None)
     await mod._handle_callback(m, st, ev)

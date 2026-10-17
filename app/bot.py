@@ -1662,9 +1662,35 @@ async def _buildings_callback(bot: VkMessenger, storage: Storage, event: VkEvent
 async def handle_event(bot: VkMessenger, event: VkEvent) -> None:
     storage = get_storage()
     if event.kind == "callback":
+        # VK держит нажатую inline-кнопку в состоянии «загрузки», пока бот не ответит
+        # на message_event вызовом messages.sendMessageEventAnswer. Отвечаем сразу:
+        # долгая обработка (рендер кадров дуэлей/арены) не должна превысить лимит ответа.
+        await _answer_message_event(bot, event)
         await _handle_callback(bot, storage, event)
     else:
         await _handle_message(bot, storage, event)
+
+
+async def _answer_message_event(bot: VkMessenger, event: VkEvent) -> None:
+    """Закрыть «загрузку» у inline-кнопки после обработки нажатия."""
+    raw = event.raw
+    if not isinstance(raw, dict):
+        return
+    event_id = raw.get("event_id")
+    if not event_id:
+        return
+    try:
+        bot.vk.method(
+            "messages.sendMessageEventAnswer",
+            {
+                "event_id": str(event_id),
+                "user_id": int(event.user_id),
+                "peer_id": int(event.peer_id),
+            },
+        )
+    except Exception as exc:
+        # Ошибка не критична: VK сам закроет загрузку по таймауту.
+        logger.debug("sendMessageEventAnswer failed: %s", exc)
 
 
 async def _daily_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -3832,7 +3858,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.13"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
