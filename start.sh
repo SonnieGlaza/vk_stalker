@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python3 run.py
+# Callback API (webhook) — режим по умолчанию для хостинга.
+# Флаг --webhook включает webhook даже без VK_USE_CALLBACK=1.
+python3 run_vk.py --webhook
