@@ -358,24 +358,29 @@ def test_pda_players_flow(env):
 
 
 def test_kpk_keyboard_has_all_sections(env):
-    """Клавиатура КПК — reply-кнопки всех разделов, как pda_keyboard в ТГ."""
+    """Клавиатура КПК — 1 в 1 с pda_keyboard в ТГ (тот же список, тот же порядок)."""
     import json
 
-    kb = json.loads(bot._pda_keyboard().get_keyboard())
-    assert kb["inline"] is False, "КПК-меню должно быть reply-клавиатурой (кнопки видны всегда)"
-    labels = [btn["action"]["label"] for row in kb["buttons"] for btn in row]
-    for want in (
+    tg_labels = (
         "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "🗺 Карта", "📍 Локация", "👥 Игроки",
         "🤝 Обмен", "💎 Находки", "💎 Арты", "📊 Дроп", "☠️ Смерти", "📊 Статистика",
         "📅 Ежедневка", "🔔 Уведомления", "🔥 Как не сдохнуть", "🏛 Клановые задачи",
         "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
-    ):
-        assert want in labels, f"в КПК нет кнопки {want}"
-    # Командиру добавляется «📣 Сбор».
+    )
+    kb = json.loads(bot._pda_keyboard().get_keyboard())
+    assert kb["inline"] is False, "КПК-меню должно быть reply-клавиатурой (кнопки видны всегда)"
+    labels = tuple(btn["action"]["label"] for row in kb["buttons"] for btn in row)
+    assert labels == tg_labels, f"Кнопки КПК не совпадают с ТГ дословно:\nVK: {labels}\nTG: {tg_labels}"
+    # Командиру «📣 Сбор» встаёт ровно между «ℹ️ Информация» и «🔗 Реферальная система» (как в ТГ).
     st, m = env
     st.set_faction_leader("Долг", UID)
-    kb2 = bot._pda_keyboard_for(st, UID).get_keyboard()
-    assert "📣 Сбор" in json.loads(kb2).get("buttons") or "📣 Сбор" in str(kb2)
+    kb2 = json.loads(bot._pda_keyboard_for(st, UID).get_keyboard())
+    labels2 = tuple(btn["action"]["label"] for row in kb2["buttons"] for btn in row)
+    pos = labels2.index("🏛 Клановые задачи")
+    assert labels2[pos + 1] == "ℹ️ Информация"
+    assert labels2[pos + 2] == "📣 Сбор"
+    assert labels2[pos + 3] == "🔗 Реферальная система"
+    assert labels2[-1] == "⬅️ В меню"
 
 
 def test_info_text_full(env):

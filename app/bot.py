@@ -159,16 +159,28 @@ def _profile_text(storage: Storage, player: Any) -> str:
 
 
 async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    """Раздел КПК «🧾 Профиль»: текстовый профиль + меню КПК."""
+    """Раздел КПК «🧾 Профиль»: PNG-карточка (как в ТГ) + меню КПК."""
     player = storage.get_character(int(event.user_id), refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
         return
-    await bot.send_message(
-        event.peer_id,
-        _profile_text(storage, player),
-        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
-    )
+    kb = _pda_keyboard_for(storage, int(event.user_id))
+    text = _profile_text(storage, player)
+    try:
+        from app.profile_card import build_character_card
+
+        rating = int((storage.get_player_stats(int(event.user_id)) or {}).get("rating_points", 0))
+        card_png = build_character_card(player, rating_points=rating, storage=storage)
+        await bot.send_photo(
+            event.peer_id,
+            card_png,
+            caption=text,
+            reply_markup=kb,
+            fallback_text=text,
+        )
+    except Exception as exc:
+        logger.warning("profile card render failed: %s", exc)
+        await bot.send_message(event.peer_id, text, reply_markup=kb)
 
 
 async def _pda_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -4097,7 +4109,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.20"
+APP_VERSION = "1.0.21"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4474,7 +4486,8 @@ def _build_info_text() -> str:
         "(🥇 пушка+броня, 🥈 пушка, 🥉 броня; у торговца не продаётся); топ-3 ГП — RU в казну.\n"
         "• ⭐ Пополнение: «⭐ Пополнить» → товары сообщества (VK Market) "
         "149/249/499/999 ₽, на карман или в казну ГП; после оплаты RU зачисляются автоматически.\n\n"
-        "Чаты и поддержка: уточняй у администратора сообщества."
+        "Чаты и поддержка: уточняй у администратора сообщества.\n"
+        f"🛠 Сборка: v{APP_VERSION}"
     )
 
 
