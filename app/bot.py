@@ -62,7 +62,7 @@ def _storage_reset() -> None:
 
 def _menu_keyboard():
     return reply_keyboard(
-        ["📟 КПК", "🎒 Инвентарь", "📡 Статус"],
+        ["🧾 Профиль", "🎒 Инвентарь", "📡 Статус"],
         ["🏕 Вылазка", "🛒 Торговец", "🏛 Группировка"],
         ["📋 Задания", "🪖 Рейды", "🏆 Рейтинг"],
         ["🏦 Барахолка", "🚚 Контрабанда", "🛰 События"],
@@ -110,8 +110,8 @@ async def _menu(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     await bot.send_message(event.peer_id, "📟 Выбери раздел:", reply_markup=_menu_keyboard())
 
 
-def _kpk_keyboard():
-    """Кнопки разделов КПК под карточкой (как в ТГ — КПК это целый раздел)."""
+def _profile_keyboard():
+    """Кнопки разделов профиля (аналог КПК-раздела ТГ), под текстом профиля."""
     return inline_keyboard(
         [("📊 Статистика", "pda:stats"), ("👥 Игроки", "pda:players")],
         [("💎 Находки", "pda:find"), ("💎 Арты", "pda:arts"), ("📊 Дроп", "pda:drop")],
@@ -121,45 +121,34 @@ def _kpk_keyboard():
     )
 
 
-async def _kpk(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+def _profile_text(storage: Storage, player: Any) -> str:
+    """Текстовый профиль: ник с титулом и медалями, ID, фракция, звание."""
+    from app.game_logic import character_rank_title
+    from app.player_medals import medals_nick_suffix
+    from app.vk_titles import title_prefix
+
+    user_id = int(player.telegram_id)
+    nick = title_prefix(storage, user_id, player.nickname)
+    medals = medals_nick_suffix(storage, user_id)
+    faction = getattr(player, "faction", None) or "не выбрана"
+    rank = character_rank_title(storage, player) or "—"
+    return (
+        f"Профиль сталкера {nick}{medals}\n"
+        f"ID: STK-{user_id}\n"
+        f"Фракция: {faction}\n"
+        f"Звание: {rank}"
+    )
+
+
+async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     player = storage.get_character(int(event.user_id), refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
         return
-    kb = _kpk_keyboard()
-    try:
-        from app.profile_card import build_character_card
-        from app.vk_titles import title_prefix
-
-        card_png = build_character_card(player, storage=storage)
-        # Карточка PNG уже содержит весь профиль — подпись делаем короткой,
-        # чтобы VK не дублировал полный текст (в подписи и под фото).
-        nick = title_prefix(storage, int(event.user_id), player.nickname)
-        await bot.send_photo(
-            event.peer_id,
-            card_png,
-            caption=("🪪 " + nick).strip(),
-            reply_markup=kb,
-            fallback_text=_profile_caption(player),
-        )
-    except Exception as exc:
-        logger.warning("profile card render failed: %s", exc)
-        await bot.send_message(event.peer_id, _profile_caption(player), reply_markup=kb)
-
-
-def _profile_caption(player: Any) -> str:
-    from app.game_logic import effective_max_health
-    from app.vk_titles import title_prefix
-
-    faction = getattr(player, "faction", None) or "нет"
-    money = getattr(player, "money", 0)
-    storage = get_storage()
-    nick = title_prefix(storage, int(player.telegram_id), player.nickname)
-    return (
-        f"🧾 {nick} ({faction})\n"
-        f"💰 Баланс: {money} RU\n"
-        f"📍 Локация: {player.location}\n"
-        f"❤️ HP: {player.health}/{effective_max_health(player)}  ⚡ Энергия: {player.energy}/{player.max_energy}"
+    await bot.send_message(
+        event.peer_id,
+        _profile_text(storage, player),
+        reply_markup=_profile_keyboard(),
     )
 
 
@@ -177,21 +166,21 @@ async def _pda_stats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None
         await bot.send_message(event.peer_id, "Сначала создай персонажа.")
         return
     text = build_player_stats_text(storage, user_id)
-    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
 
 
 async def _pda_find(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     from app.game_logic import build_artifact_find_log_text
 
     text = build_artifact_find_log_text(storage, int(event.user_id))
-    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
 
 
 async def _pda_arts(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     from app.artifact_features import build_my_artifacts_text
 
     text = build_my_artifacts_text(storage, int(event.user_id))
-    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
 
 
 async def _pda_drop(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -208,7 +197,7 @@ async def _pda_drop(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
         str(player.location),
         best_detector_base_chance(player) or 17,
     )
-    await bot.send_message(event.peer_id, text, reply_markup=_kpk_keyboard())
+    await bot.send_message(event.peer_id, text, reply_markup=_profile_keyboard())
 
 
 async def _pda_players(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -4022,7 +4011,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.17"
+APP_VERSION = "1.0.18"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -5586,8 +5575,8 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     norm = text.strip()
     norm_lower = norm.lower()
     # Универсальная навигация и алиасы, чтобы reply-кнопки всегда срабатывали.
-    if norm_lower in ("кпк", "пда", "паспорт"):
-        await _kpk(bot, storage, event)
+    if norm_lower in ("профиль", "кпк", "пда", "паспорт"):
+        await _profile(bot, storage, event)
         return
     if norm_lower in ("статус", "ст"):
         await _status(bot, storage, event)
@@ -5622,8 +5611,8 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     if first_word in ("/сбор", "/sbor", "сбор"):
         await _cmd_sbor(bot, storage, event, " ".join(parts_cmd[1:]))
         return
-    if norm == "📟 КПК":
-        await _kpk(bot, storage, event)
+    if norm in ("🧾 Профиль", "📟 КПК"):
+        await _profile(bot, storage, event)
     elif norm == "📡 Статус":
         await _status(bot, storage, event)
     elif norm == "🎒 Инвентарь":

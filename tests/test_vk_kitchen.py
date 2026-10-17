@@ -83,7 +83,7 @@ async def _click_cbs(st, m, flows):
 def test_menu_reply_buttons(env):
     st, m = env
     labels = [
-        "📟 КПК", "🎒 Инвентарь", "📡 Статус", "🏕 Вылазка", "🛒 Торговец",
+        "🧾 Профиль", "🎒 Инвентарь", "📡 Статус", "🏕 Вылазка", "🛒 Торговец",
         "🏛 Группировка", "📋 Задания", "🪖 Рейды", "🏆 Рейтинг", "🏦 Барахолка",
         "🚚 Контрабанда", "🛰 События", "⚔️ Дуэль", "⚔️ Арена", "👥 Кооп",
         "📅 Ежедневка", "⭐ Пополнить", "🔔 Уведомления", "☠️ Смерти",
@@ -247,7 +247,7 @@ def test_dead_player_auto_respawn(env):
 
     async def run():
         m.sent.clear()
-        await bot._handle_message(m, st, _ev("кпк"))
+        await bot._handle_message(m, st, _ev("профиль"))
         merged = _merged(m.sent)
         assert "☠️" in merged, merged[:120]
         char = st.get_character(UID, refresh_energy=False)
@@ -338,7 +338,7 @@ def test_kpk_keyboard_has_all_sections(env):
     """Под карточкой КПК все разделы ТГ-КПК (payload-кнопки)."""
     import json
 
-    kb = json.loads(bot._kpk_keyboard().get_keyboard())
+    kb = json.loads(bot._profile_keyboard().get_keyboard())
     cbs = set()
     for row in kb["buttons"]:
         for btn in row:
@@ -411,3 +411,24 @@ def test_players_unknown_payload_safe(env):
     """Мусорный players-payload не роняет диспетчер."""
     st, m = env
     _run(_click_cbs(st, m, ["players:f:НетТаких:999", "players:root"]))
+
+
+def test_profile_text_format(env):
+    """Профиль: ник с медалями, ID STK-, фракция, звание (как в примере)."""
+    st, m = env
+    from app.player_medals import grant_medal, medals_nick_suffix
+
+    grant_medal(st, UID, "season_gold")
+    st.set_faction_rank(UID, "r6")
+    text = bot._profile_text(st, st.get_character(UID, refresh_energy=False))
+    assert text.startswith("Профиль сталкера Тестовый"), text
+    assert "🥇" in text, "медали не попали в профиль: " + text
+    assert f"ID: STK-{UID}" in text, text
+    assert "Фракция: Долг" in text, text
+    assert "Звание: Майор" in text, text
+
+    # Через кнопку в меню тоже.
+    m.sent.clear()
+    _run(bot._handle_message(m, st, _ev("🧾 Профиль")))
+    merged = _merged(m.sent)
+    assert "ID: STK-" in merged and "Фракция: Долг" in merged, merged[:160]
