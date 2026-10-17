@@ -228,13 +228,16 @@ class VkMessenger:
                 "Затем вставь его ровно один (без кавычек, пробелов и лишнего текста) в VK_TOKEN в .env."
             )
         self.vk = vk_api.VkApi(token=self.token, api_version="5.131")
+        # НЕ вызываем auth(): в vk_api 11+ auth(token_only=True) требует поле login
+        # и падает LoginRequired даже с валидным токеном. Токен уже передан в конструктор.
+        # Вместо этого проверяем токен живым запросом.
         try:
-            self.vk.auth(token_only=True)
-        except vk_api.exceptions.LoginRequired as exc:
+            self.vk.method("groups.getById", {"group_id": int(self.group_id)})
+        except vk_api.exceptions.ApiError as exc:
             raise ValueError(
-                "VK не принял токен (LoginRequired). Проверь, что VK_TOKEN — ключ доступа сообщества с "
-                "нужными правами (сообщения, управление сообществом, Long Poll API, Callback) и не "
-                f"просрочен. Длина токена в .env: {len(self.token)}."
+                "VK вернул ошибку при проверке токена: " + str(exc) + "\n"
+                "Проверь, что VK_TOKEN — действующий ключ доступа сообщества (≈85 символов, vk1.a.…)\n"
+                "с правами: сообщения, управление сообществом, Long Poll API, Callback, фото, документы."
             ) from exc
         self._uploader = VkUpload(self.vk)
 
@@ -447,7 +450,7 @@ def _poll_worker(settings: Settings, queue: "asyncio.Queue[VkEvent]", stop: "thr
     """Слушает Long Poll в отдельном потоке и кладёт события в asyncio.Queue."""
     try:
         vk = vk_api.VkApi(token=settings.vk_token, api_version="5.131")
-        vk.auth(token_only=True)
+        # auth() не вызываем (см. VkMessenger.__init__): токен уже в конструкторе.
         lp = VkBotLongPoll(vk, group_id=settings.group_id, wait=25)
         logger.info("VK Long Poll запущен (group_id=%s)", settings.group_id)
         while not stop.is_set():
