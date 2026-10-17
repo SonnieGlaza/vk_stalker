@@ -316,14 +316,17 @@ chmod +x start.sh
 - `assets/avatars/stalker_t1..t4.png` — общие шаблоны аватаров (fallback)
 - `assets/avatars/factions/` — скины по группировкам (`dolg`, `svoboda`, `neutraly`, `bandity`)
 - `scripts/import_faction_skins.py` — импорт папки «скины» с ресайзом до 250×250
-- `run.py` — точка входа
-- `smoke_check.py` — интеграционный smoke-тест
+- `run_vk.py` — точка входа VK (Long Poll; `--webhook` — Callback API)
 
-Проверка перед деплоем:
+Автотесты (основной чекер VK-порта):
 
 ```bash
-python3 smoke_check.py
+python -m pytest tests -q
 ```
+
+Дополнительные проверки (`docs/` и README выше): обход всех меню/кнопок,
+боевые сессии, фоновый тик — описаны в разделе «Уже работает»; сам `smoke_check.py`
+остался в Telegram-версии и в VK не используется.
 
 ## Важно для Railway (сохранение персонажа)
 
