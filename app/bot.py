@@ -3820,7 +3820,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 
 def _init_admin_ids(settings: Any) -> None:
@@ -3913,6 +3913,87 @@ async def _admin_command(bot: VkMessenger, storage: Storage, event: VkEvent, low
         await _rating_season(bot, storage, event, 0)
         return True
 
+    if cmd in ("setfaction", "/setfaction"):
+        if len(args) < 2:
+            await bot.send_message(int(event.peer_id), "Формат: setfaction [прозвище|id] [Долг|Свобода|Нейтралы|Бандиты|Монолит]")
+            return True
+        uid_target, target = await _resolve_admin_target(storage, args[0])
+        if uid_target is None or target is None:
+            await bot.send_message(int(event.peer_id), f"Игрок «{args[0]}» не найден.")
+            return True
+        faction = _faction_from_word(args[1])
+        if faction is None:
+            await bot.send_message(int(event.peer_id), "Неизвестная группировка.")
+            return True
+        storage.set_faction(uid_target, faction)
+        await bot.send_message(
+            int(event.peer_id),
+            f"Игрок {target.nickname} переведён в «{faction}».\n"
+            f"Его база: {storage.get_character(uid_target, refresh_energy=False).location if storage.get_character(uid_target, refresh_energy=False) else '?'}",
+        )
+        return True
+
+    if cmd in ("leader", "/leader", "commander", "/commander"):
+        if len(args) < 2:
+            await bot.send_message(int(event.peer_id), "Формат: leader [группировка] [прозвище|id]")
+            return True
+        faction = _faction_from_word(args[0])
+        if faction is None:
+            await bot.send_message(int(event.peer_id), "Неизвестная группировка.")
+            return True
+        uid_target, target = await _resolve_admin_target(storage, args[1])
+        if uid_target is None or target is None:
+            await bot.send_message(int(event.peer_id), f"Игрок «{args[1]}» не найден.")
+            return True
+        ok = storage.set_faction_leader(faction, uid_target)
+        await bot.send_message(
+            int(event.peer_id),
+            f"{target.nickname} назначен командиром «{faction}»." if ok else "Не удалось назначить (проверь фракцию игрока).",
+        )
+        return True
+
+    if cmd in ("settravel", "/settravel"):
+        if len(args) < 2:
+            await bot.send_message(int(event.peer_id), "Формат: settravel [прозвище|id] [секунды]")
+            return True
+        uid_target, target = await _resolve_admin_target(storage, args[0])
+        if uid_target is None or target is None:
+            await bot.send_message(int(event.peer_id), f"Игрок «{args[0]}» не найден.")
+            return True
+        try:
+            seconds = max(0, int(args[1]))
+        except (TypeError, ValueError):
+            await bot.send_message(int(event.peer_id), "Секунды должны быть числом.")
+            return True
+        from datetime import timedelta
+
+        from app.storage import utc_now
+
+        arrives = (utc_now() + timedelta(seconds=seconds)).isoformat()
+        with storage._connect() as conn:
+            conn.execute(
+                "UPDATE characters SET travel_arrives_at = ? WHERE telegram_id = ?",
+                (arrives, uid_target),
+            )
+        await bot.send_message(int(event.peer_id), f"Время прибытия {target.nickname} обновлено (+{seconds} сек).")
+        return True
+
+    if cmd in ("всем", "/всем", "all", "/all"):
+        announcement = " ".join(args)
+        if not announcement:
+            await bot.send_message(int(event.peer_id), "Формат: всем <текст>")
+            return True
+        text = f"📢 {announcement}"
+        sent = 0
+        for raw in storage.list_player_ids():
+            try:
+                await bot.send_message(int(raw), text)
+                sent += 1
+            except Exception as exc:
+                logger.debug("broadcast failed (%s): %s", raw, exc)
+        await bot.send_message(int(event.peer_id), f"Объявление отправлено {sent} игрокам.")
+        return True
+
     return False
 
 
@@ -4002,6 +4083,118 @@ async def _resolve_admin_target(storage: Storage, token: str) -> tuple[int | Non
     if uid is None:
         return None, None
     return uid, storage.get_character(uid, refresh_energy=False)
+
+
+def _faction_from_word(word: str) -> str | None:
+    clean = (word or "").strip().lower()
+    mapping = {
+        "долг": "Долг",
+        "свобода": "Свобода",
+        "нейтралы": "Нейтралы", "нейтрал": "Нейтралы", "нейтрал": "Нейтралы",
+        "бандиты": "Бандиты", "бандит": "Бандиты",
+        "монолит": "Монолит",
+    }
+    return mapping.get(clean)
+
+
+# ---------------------------------------------------------------------------
+# Текстовые команды для всех (аналог ТГ-команд)
+# ---------------------------------------------------------------------------
+
+
+async def _cmd_help(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    text = (
+        "📖 Как играть\n\n"
+        "• Кнопки меню — основное; текстом можно:\n"
+        "  /menu — меню, /info — эта справка, /cancel — отменить ввод\n"
+        "  /respawn — возродиться (только если HP=0)\n"
+        "  дуэль <ник/ид> — вызвать на дуэль\n"
+        "  pay <ник/ид> <сумма> — перевод RU (комиссия 20%)\n"
+        "  сбор <текст> — лидеру оповестить группировку\n\n"
+        "• Секции: КПК, Инвентарь, Вылазка, Торговец, Группировка, Задания,\n"
+        "  Рейды, Война (с Атакой Монолита), Рейтинг, Барахолка, Контрабанда,\n"
+        "  События, Дуэль, Арена, Кооп, Ежедневка, Пополнение, Уведомления,\n"
+        "  Смерти, Обучение.\n"
+        "• Админ-команды: give/top/fixme/setfaction/leader/settravel/всем и др."
+    )
+    await bot.send_message(int(event.peer_id), text)
+
+
+async def _cmd_cancel(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    fsm = VkFSM(int(event.user_id))
+    await fsm.clear()
+    await bot.send_message(int(event.peer_id), "Ввод отменён.", reply_markup=_menu_keyboard())
+
+
+async def _cmd_respawn(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import respawn_character
+
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
+        return
+    if player.health > 0:
+        await bot.send_message(int(event.peer_id), "Ты жив — респавн не нужен.")
+        return
+    result = respawn_character(storage, user_id)
+    await bot.send_message(int(event.peer_id), result.text, reply_markup=_menu_keyboard())
+
+
+async def _cmd_duel(bot: VkMessenger, storage: Storage, event: VkEvent, target: str) -> None:
+    try:
+        target_id = int(target)
+    except (TypeError, ValueError):
+        target_id = storage.find_telegram_id_by_nickname(target)
+    if target_id is None or target_id <= 0:
+        await bot.send_message(int(event.peer_id), "Игрок не найден. Формат: дуэль <ник|id>")
+        return
+    await _duel_start(bot, storage, event, target_id)
+
+
+async def _cmd_pay(bot: VkMessenger, storage: Storage, event: VkEvent, args: list[str]) -> None:
+    from app.game_logic import transfer_money_with_fee
+
+    user_id = int(event.user_id)
+    if len(args) < 2:
+        await bot.send_message(int(event.peer_id), "Формат: pay <ник|ид> <сумма>")
+        return
+    target_id, _target = await _resolve_admin_target(storage, args[0])
+    if target_id is None:
+        await bot.send_message(int(event.peer_id), f"Игрок «{args[0]}» не найден.")
+        return
+    try:
+        amount = int(args[1])
+    except (TypeError, ValueError):
+        await bot.send_message(int(event.peer_id), "Сумма должна быть числом.")
+        return
+    if amount <= 0:
+        await bot.send_message(int(event.peer_id), "Сумма должна быть больше нуля.")
+        return
+    result = transfer_money_with_fee(storage, user_id, target_id, amount)
+    await bot.send_message(int(event.peer_id), result.text)
+
+
+async def _cmd_sbor(bot: VkMessenger, storage: Storage, event: VkEvent, text: str) -> None:
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None or not player.faction:
+        await bot.send_message(int(event.peer_id), "Ты без группировки.")
+        return
+    if storage.get_faction_leader_id(player.faction) != user_id:
+        await bot.send_message(int(event.peer_id), "Сбор может объявить только лидер группировки.")
+        return
+    body = (text or "").strip()
+    message = f"📣 Сбор! {player.nickname} зовёт: {body}" if body else f"📣 Сбор! {player.nickname} созвал бойцов."
+    sent = 0
+    for row in storage.list_faction_members(player.faction):
+        try:
+            await bot.send_message(int(row["telegram_id"]), message)
+            sent += 1
+        except Exception as exc:
+            logger.debug("sbor notify failed: %s", exc)
+    await bot.send_message(int(event.peer_id), f"📣 Объявление отправлено {sent} бойцам.")
+
 
 
 # ---------------------------------------------------------------------------
@@ -5039,6 +5232,8 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         "unstick", "/unstick", "deleteplayer", "/deleteplayer",
         "title", "/title", "titleoff", "/titleoff",
         "setseason", "/setseason", "confirm_topup", "/confirm_topup",
+        "setfaction", "/setfaction", "leader", "/leader", "commander", "/commander",
+        "settravel", "/settravel", "всем", "/всем", "all", "/all",
     ):
         if await _admin_command(bot, storage, event, lowered, text):
             return
@@ -5064,6 +5259,30 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         return
     if norm_lower in ("📋 список контрактов", "список контрактов", "📋 контракты"):
         await _quest_list(bot, storage, event, 0)
+        return
+    # Текстовые команды для всех (аналог ТГ-команд).
+    parts_cmd = norm.split()
+    first_word = parts_cmd[0].lower() if parts_cmd else ""
+    if first_word in ("/menu", "/меню"):
+        await _menu(bot, storage, event)
+        return
+    if first_word in ("/info", "/help", "/справка", "help", "помощь"):
+        await _cmd_help(bot, storage, event)
+        return
+    if first_word in ("/cancel", "отмена", "отменить"):
+        await _cmd_cancel(bot, storage, event)
+        return
+    if first_word in ("/respawn", "респавн"):
+        await _cmd_respawn(bot, storage, event)
+        return
+    if first_word in ("/дуэль", "/duel", "дуэль", "вызвать") and len(parts_cmd) >= 2:
+        await _cmd_duel(bot, storage, event, parts_cmd[1])
+        return
+    if first_word in ("/pay", "pay", "перевод") and len(parts_cmd) >= 2:
+        await _cmd_pay(bot, storage, event, parts_cmd[1:])
+        return
+    if first_word in ("/сбор", "/sbor", "сбор"):
+        await _cmd_sbor(bot, storage, event, " ".join(parts_cmd[1:]))
         return
     if norm == "📟 КПК":
         await _kpk(bot, storage, event)
