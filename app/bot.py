@@ -3858,7 +3858,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.13"
+APP_VERSION = "1.0.14"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -5003,7 +5003,9 @@ def _player_in_tactical_session(storage: Storage, user_id: int) -> bool:
             return True
         if get_duel_session_by_player(storage, user_id):
             return True
-        if player_busy_reason(storage, user_id):
+        # skip="dead": мёртвый игрок не «занят» сам по себе — иначе авто-респавн
+        # (экран смерти, оффлайн-тик) никогда не сработает.
+        if player_busy_reason(storage, user_id, skip="dead"):
             return True
     except Exception:
         pass
@@ -5272,6 +5274,15 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         # Мёртвый — сначала респавн, потом действие.
         if await _maybe_respawn_dead(bot, storage, event):
             return
+    # Команды управления работают ДАЖЕ во время FSM-ввода (иначе «/cancel»
+    # трактовался бы как сумма/цена и игрок не мог бы выйти из ввода).
+    lowered_word0 = lowered.split()[0] if lowered.split() else ""
+    if lowered_word0 in ("/cancel", "отмена", "отменить"):
+        await _cmd_cancel(bot, storage, event)
+        return
+    if lowered_word0 in ("/menu", "/меню"):
+        await _menu(bot, storage, event)
+        return
     # FSM: ввод цены лота биржи/рынка или суммы пополнения.
     fsm = VkFSM(int(event.user_id))
     fsm_state = await fsm.get_state()

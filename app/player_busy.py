@@ -186,13 +186,15 @@ def recover_stuck_player(storage: Storage, telegram_id: int, *, force_clear: boo
 
 
 def player_busy_reason(storage: Storage, telegram_id: int, *, skip: str | None = None, auto_recover: bool = True) -> str | None:
-    """Вернёт текст блокировки или None если свободен. skip: duel|coop|quest|hunt|cwar|ncap|rgrid|arena|travel|smuggle."""
+    """Вернёт текст блокировки или None если свободен. skip: duel|coop|quest|hunt|cwar|ncap|rgrid|arena|travel|smuggle|dead."""
     from app.session_recovery import auto_recover_before_busy_check
 
     if auto_recover:
         auto_recover_before_busy_check(storage, telegram_id)
     player = storage.get_character(telegram_id, refresh_energy=False)
-    if player is not None and player.health <= 0:
+    # skip="dead": мёртвый игрок «занят» для игровых действий, но НЕ считается
+    # тактической сессией — иначе блокируется экран смерти и авто-респавн.
+    if skip != "dead" and player is not None and player.health <= 0:
         return "Ты без сознания — сначала респавн (/respawn)."
 
     from app.duel_grid import get_duel_session_by_player

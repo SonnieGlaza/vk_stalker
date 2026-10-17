@@ -238,6 +238,42 @@ def test_message_event_answered(env):
     assert len(calls) == 1
 
 
+def test_dead_player_auto_respawn(env):
+    """Мёртвый игрок при любом сообщении получает экран смерти и респавнится."""
+    st, m = env
+    with st._connect() as conn:
+        conn.execute("UPDATE characters SET health = 0 WHERE telegram_id = ?", (UID,))
+    assert not bot._player_in_tactical_session(st, UID), "мёртвый игрок не должен быть «занят»"
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("кпк"))
+        merged = _merged(m.sent)
+        assert "☠️" in merged, merged[:120]
+        char = st.get_character(UID, refresh_energy=False)
+        assert char is not None and char.health > 0
+
+    _run(run())
+
+
+def test_cancel_works_during_fsm_input(env):
+    """«/cancel» работает даже пока активен FSM-ввод (сумма пополнения)."""
+    st, m = env
+    from app.vk_platform import VkFSM
+
+    async def run():
+        await bot._handle_callback(m, st, _ev_cb("topup:custom"))
+        state = await VkFSM(UID).get_state()
+        assert state == "topup_custom"
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("/cancel"))
+        assert "отменён" in _merged(m.sent)
+        state = await VkFSM(UID).get_state()
+        assert state is None
+
+    _run(run())
+
+
 async def _handle_cb(mod, m, st, payload, *, uid=UID):
     ev = SimpleNamespace(kind="callback", user_id=uid, peer_id=uid, text="", payload=payload, message_id=None, raw=None)
     await mod._handle_callback(m, st, ev)
