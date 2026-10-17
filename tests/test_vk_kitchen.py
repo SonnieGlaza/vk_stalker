@@ -319,6 +319,25 @@ def test_pda_sections_respond(env):
     _run(_click_cbs(st, m, ["pda:stats", "pda:menu"]))
 
 
+def test_pda_sbor_button(env):
+    """Кнопка «📣 Сбор» (только командир) в reply-меню КПК отвечает, а не «Не понял»."""
+    st, m = env
+    # Не-лидер — вежливый отказ.
+    _run(_click_texts(st, m, ["📣 Сбор"]))
+    assert "только лидер" in _merged(m.sent), _merged(m.sent)[:160]
+    # Лидер группировки — объявление бойцам.
+    st.set_faction_leader("Долг", UID)
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("📣 Сбор"))
+        merged = _merged(m.sent)
+        assert "📣 Сбор" in merged and "Тестовый" in merged, merged[:200]
+        assert "Не понял" not in merged, merged[:200]
+
+    _run(run())
+
+
 def test_pda_players_flow(env):
     """КПК → Игроки: список группировок и страница фракции с кнопками дуэли."""
     st, m = env
