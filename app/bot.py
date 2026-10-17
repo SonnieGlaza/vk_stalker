@@ -63,7 +63,7 @@ def _storage_reset() -> None:
 def _menu_keyboard():
     return reply_keyboard(
         ["📟 КПК", "🎒 Инвентарь", "📡 Статус"],
-        ["🏕 Вылазка", "🛒 Торговец", "🏛 Группировка"],
+        ["🏕 Вылазка", "🛒 Торговец", "👥 Группировка"],
         ["📋 Задания", "🪖 Рейды", "🏆 Рейтинг"],
         ["🏦 Барахолка", "🚚 Контрабанда", "🛰 События"],
         ["⚔️ Дуэль", "⚔️ Арена", "👥 Кооп"],
@@ -107,7 +107,30 @@ async def cmd_start(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
 
 
 async def _menu(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    await bot.send_message(event.peer_id, "📟 Выбери раздел:", reply_markup=_menu_keyboard())
+    await bot.send_message(event.peer_id, "Главное меню.", reply_markup=_menu_keyboard())
+
+
+def _sortie_keyboard():
+    """Клавиатура «🏕 Вылазка» — как sortie_keyboard в ТГ."""
+    return reply_keyboard(
+        ["⚔️ Война", "🗺 Переход"],
+        ["⚔️ Арена", "🪖 Рейды"],
+        ["📍 Локация"],
+        ["⬅️ В меню"],
+    )
+
+
+async def _sortie_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Раздел «🏕 Вылазка» (как show_sortie в ТГ): война, переходы, арена, рейды."""
+    player = storage.get_character(int(event.user_id), refresh_energy=True)
+    if player is None:
+        await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
+        return
+    await bot.send_message(
+        event.peer_id,
+        "🏕 Вылазка\nВойна, переходы по Зоне, арена, рейды и кооп.",
+        reply_markup=_sortie_keyboard(),
+    )
 
 
 def _pda_keyboard(*, is_leader: bool = False):
@@ -298,8 +321,7 @@ async def _pda_players(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
     for faction_key, title, count in items:
         rows.append([(f"{title} ({count})", f"players:f:{faction_key}:0")])
     if not rows:
-        rows.append([("Игроков пока нет", "pda:players")])
-    rows.append([("⬅️ В меню", "walk:exit")])
+        rows.append([("Игроков нет", "pda:players")])
     await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*rows))
 
 
@@ -319,7 +341,7 @@ async def _pda_players_faction(
         if not tid or tid == user_id:
             continue
         nick = str(row.get("nickname") or f"id{tid}")
-        rows.append([(f"⚔️ Вызвать: {title_prefix(storage, tid, nick)}", f"duel:start:{tid}")])
+        rows.append([(f"⚔️ Вызвать на дуэль: {title_prefix(storage, tid, nick)}", f"duel:start:{tid}")])
     nav: list[tuple[str, str]] = []
     if safe_page > 0:
         nav.append(("⬅️", f"players:f:{safe_key}:{safe_page - 1}"))
@@ -327,7 +349,7 @@ async def _pda_players_faction(
     if safe_page < total_pages - 1:
         nav.append(("➡️", f"players:f:{safe_key}:{safe_page + 1}"))
     rows.append(nav)
-    rows.append([("👥 К группировкам", "pda:players"), ("⬅️ В меню", "walk:exit")])
+    rows.append([("⬅️ К группировкам", "pda:players")])
     await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*rows))
 
 
@@ -376,21 +398,15 @@ async def _players_callback(bot: VkMessenger, storage: Storage, event: VkEvent, 
 
 
 async def _status(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import effective_max_health
-    from app.vk_titles import title_prefix
-
     user_id = int(event.user_id)
     player = storage.get_character(user_id, refresh_energy=True)
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа.")
         return
     try:
-        nick = title_prefix(storage, user_id, player.nickname)
-        max_hp = effective_max_health(player)
-        text = (
-            f"📡 {nick}\nHP {player.health}/{max_hp}\n"
-            f"Энергия {player.energy}/{player.max_energy}\nЛокация: {player.location}"
-        )
+        from app.game_logic import build_quick_status_text
+
+        text = build_quick_status_text(storage, user_id)
     except Exception as exc:
         logger.warning("status render failed (%s): %s", user_id, exc, exc_info=True)
         text = f"📡 {player.nickname}\nHP {player.health}/100\nЛокация: {player.location}"
@@ -402,26 +418,21 @@ async def _inventory(bot: VkMessenger, storage: Storage, event: VkEvent) -> None
     if player is None:
         await bot.send_message(event.peer_id, "Сначала создай персонажа.")
         return
-    from app.game_logic import ITEM_LABELS
+    from app.game_logic import format_inventory
 
-    inv = getattr(player, "inventory", {}) or {}
-    lines = ["🎒 Инвентарь", ""]
-    if not inv:
-        lines.append("Пусто.")
-    for key, count in list(inv.items())[:24]:
-        label = ITEM_LABELS.get(key, key)
-        lines.append(f"• {label}: {count}")
-    lines.append("")
-    lines.append("💊 «Употребить» можно вне боя — аптечки, еда, вода, бафы.")
-    rows: list[list] = []
-    for key in _USE_ITEM_MAP:
-        count = int(inv.get(key, 0))
-        if count <= 0:
-            continue
-        label = ITEM_LABELS.get(key, key)
-        rows.append([(f"💊 {label} ×{count}", f"inventory:use:{key}")])
-    rows.append([("🗄 Личный хабар", "stash:menu")])
-    await bot.send_message(event.peer_id, "\n".join(lines), reply_markup=inline_keyboard(*rows))
+    text = format_inventory(
+        player,
+        rating_points=int(storage.get_player_stats(int(event.user_id)).get("rating_points", 0)),
+        storage=storage,
+    )
+    rows: list[list] = [
+        [("🧰 Расходники", "inventory:consumables")],
+        [("🗄 Хабар", "stash:menu")],
+        [("🛒 Купить тайник (от 5000)", "trade:buyitem:stash_case")],
+        [("📦 Открыть тайник", "inventory:use:stash_case")],
+        [("⚙️ Экипировка", "trade:equip")],
+    ]
+    await bot.send_message(event.peer_id, text, reply_markup=inline_keyboard(*rows))
 
 
 # ---------------------------------------------------------------------------
@@ -453,22 +464,24 @@ def _walk_zone_action_rows(storage: Storage, player: Any) -> list[list]:
     if kind == "base":
         return [
             [("🛒 Торговец", "locmap:vendor"), ("📋 Задания", "locmap:quests")],
-            [("🎒 Пополнение снаряжения", "locmap:resupply")],
+            [("🎒 Пополнить снаряжение", "locmap:resupply")],
         ]
     if kind in ("bazaar", "trade"):
         return [[("🏦 Барахолка", "locmap:bazaar"), ("🛒 Торговец", "locmap:vendor")]]
     if kind == "anomaly":
         return [[("☢ Поиск артов", "locmap:anomaly")]]
     if kind == "search":
-        return [[("🏚 Поиск хабара", f"locmap:search:{zone_id}")]]
+        label = str((zone or {}).get("label") or "хабара")
+        return [[(f"🏚 Поиск хабара: {label}", f"locmap:search:{zone_id}")]]
     if kind == "lab":
-        return [[("🧪 Войти в лабораторию", f"locmap:lab:{zone_id}")]]
+        label = str((zone or {}).get("label") or "лаборатория")
+        return [[(f"🧪 {label}", f"locmap:lab:{zone_id}")]]
     if kind == "secrettrader":
-        return [[("🕶 Тайный торговец", "locmap:secrettrader")]]
+        return [[("🕵 Бунс (тайный торговец)", "locmap:secrettrader")]]
     if kind == "forester":
-        return [[("🪵 Лесник (трофеи ×3)", "locmap:forester")]]
+        return [[("🪵 Лесник: трофеи ×3", "locmap:forester")]]
     if kind == "lair":
-        return [[("🕳 Логово", "locmap:lair")]]
+        return [[("👹 Зачистка логова", "locmap:lair")]]
     return []
 
 
@@ -479,22 +492,32 @@ async def _walk_render(bot: VkMessenger, storage: Storage, event: VkEvent, playe
         frame = render_walk_frame(storage, player)
         x, y = _gp(storage, int(event.user_id))
         zone = zone_at(str(player.location), x, y, faction=player.faction, storage=storage)
-        zone_line = f"\n📍 Под тобой: {zone.get('label', 'пустое место')}" if zone else ""
-        caption = (
-            f"🌲 {player.location}\n"
-            f"{zone_line}\n"
-            "Стрелки — ход по локации; действия зоны — кнопками ниже."
-        )
+        from app.game_logic import FACTION_HOME_BASE
+        from app.secret_trader import SECRET_TRADER_LOCATION
+
+        lines = [f"📍 Локация: {player.location}"]
+        faction = getattr(player, "faction", None) or ""
+        home = FACTION_HOME_BASE.get(faction) if faction else None
+        if home and str(player.location) == home:
+            lines.append("Здесь расположена база твоей группировки — торговец и 🎒 пополнение снаряжения.")
+        else:
+            for _owner, _base in FACTION_HOME_BASE.items():
+                if str(player.location) == _base and _owner != faction:
+                    lines.append(
+                        f"⛔ Это база группировки «{_owner}» — чужим вход запрещён, пополнение недоступно."
+                    )
+        if str(player.location) == SECRET_TRADER_LOCATION:
+            lines.append("Здесь орудует Бунс — тайный торговец, скупает информацию")
+        caption = "\n".join(lines) + f"\n\n🗺 Ты на клетке X {x + 1} · Y {y + 1}"
+        if zone:
+            caption += f"\n📍 Ты в зоне: {zone.get('label') or zone.get('id')}"
         rows: list[list] = []
         zone_actions = _walk_zone_action_rows(storage, player)
         if zone_actions:
             rows.extend(zone_actions)
-        base_kb = _walk_keyboard()
         fallback_text = (
-            f"🌲 {player.location}{zone_line}\n\n"
-            "Картинка временно не загрузилась — команды работают:\n"
-            "«🗺 Переходы» — смена локации, «📡 Поиск артов» — детектор, "
-            "«🏚 Схрон» — поиск хабара, стрелки — ход по локации."
+            f"📍 Локация: {player.location}\n\n"
+            "Картинка временно не загрузилась — стрелки ходят по локации, кнопки зоны работают."
         )
         await bot.send_photo(
             event.peer_id,
@@ -517,13 +540,10 @@ async def _walk_render(bot: VkMessenger, storage: Storage, event: VkEvent, playe
 
 
 def _walk_keyboard_rows() -> list[list]:
-    """Строки обычной клавиатуры вылазки (без action-строк зоны)."""
+    """Строки клавиатуры прогулки — как в ТГ: только стрелки (действия зоны добавляются отдельно)."""
     return [
         [("⬆️ Вперёд", "walk:up")],
         [("⬅️ Влево", "walk:left"), ("⬇️ Назад", "walk:down"), ("➡️ Вправо", "walk:right")],
-        [("🔍 Осмотр", "walk:inspect"), ("🔃 Обновить", "walk:refresh")],
-        [("🗺 Переходы", "travel:open"), ("📡 Поиск артов", "hunt:open"), ("🏚 Схрон", "sthunt:open")],
-        [("🗺 Карта Зоны", "locmap:zonemap"), ("⬅️ В меню", "walk:exit")],
     ]
 
 
@@ -1930,49 +1950,26 @@ async def _answer_message_event(bot: VkMessenger, event: VkEvent) -> None:
 
 
 async def _daily_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import get_daily_login_state, has_claimed_daily_login_today
-
-    user_id = int(event.user_id)
-    state = get_daily_login_state(storage, user_id)
-    already = has_claimed_daily_login_today(storage, user_id)
-    streak = int(state.get("streak") or 0)
-    next_day = streak + 1
-    rewards = {1: 150, 2: 200, 3: 300, 4: 400}
-    reward = rewards.get(next_day, 500)
-    extra = " + аптечка" if next_day % 7 == 0 else ""
-    caption = (
-        "📅 Ежедневная награда\n\n"
-        f"Текущий стрик: {streak} дн.\n"
-        f"Сегодня: +{reward} RU{extra}.\n\n"
-        "Рост: 1 дн. — 150, 2 — 200, 3 — 300, 4 — 400, 5+ — 500 RU\n"
-        "(каждый 7-й день стрика — ещё и аптечка). Стрик рвётся, если пропустить день."
-    )
-    if already:
-        await bot.send_message(
-            int(event.peer_id),
-            caption + "\n\n✅ Награда за сегодня уже получена.",
-            reply_markup=inline_keyboard([("ℹ️ Завтра вернёшься — стрик продолжится", "daily:info")]),
-        )
+    """«📅 Ежедневка» (как в ТГ): награда выдаётся сразу при открытии раздела."""
+    player = storage.get_character(int(event.user_id), refresh_energy=True)
+    if player is None:
+        await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
         return
+    from app.game_logic import claim_daily_login
+
+    result = claim_daily_login(storage, int(event.user_id))
     await bot.send_message(
         int(event.peer_id),
-        caption,
-        reply_markup=inline_keyboard([("✅ Забрать награду", "daily:claim")]),
+        result.text,
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
     )
 
 
 async def _daily_claim(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import claim_daily_login
-
-    result = claim_daily_login(storage, int(event.user_id))
-    await bot.send_message(int(event.peer_id), result.text)
     await _daily_open(bot, storage, event)
 
 
 async def _daily_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
-    if payload.startswith("daily:claim"):
-        await _daily_claim(bot, storage, event)
-        return
     await _daily_open(bot, storage, event)
 
 
@@ -1983,9 +1980,10 @@ async def _daily_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pa
 
 def _rating_keyboard():
     return inline_keyboard(
-        [("🏆 За всё время", "rating:alltime:page:0")],
+        [("📊 Моя статистика", "rating:stats")],
+        [("🏆 Рейтинг за всё время", "rating:alltime:page:0")],
         [("📅 Рейтинг за сезон", "rating:season:page:0")],
-        [("🏔 Группировки", "rating:factions"), ("🎖 Достижения", "rating:achievements")],
+        [("🏅 Рейтинг группировок", "rating:factions"), ("🎖 Достижения и медали", "rating:achievements")],
         [("📅 Когда кончится сезон", "rating:seasoninfo")],
         [("⬅️ В меню", "rating:exit")],
     )
@@ -1995,6 +1993,23 @@ async def _rating_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
     from app.game_logic import build_rating_menu_text
 
     await bot.send_message(int(event.peer_id), build_rating_menu_text(), reply_markup=_rating_keyboard())
+
+
+async def _rating_stats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """«📊 Моя статистика» в рейтинге (как ratings:stats в ТГ)."""
+    from app.game_logic import build_player_stats_text
+
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
+        return
+    text = build_player_stats_text(storage, user_id)
+    await bot.send_message(
+        int(event.peer_id),
+        text,
+        reply_markup=inline_keyboard([("⬅️ К разделам рейтинга", "rating:menu")]),
+    )
 
 
 async def _rating_alltime(bot: VkMessenger, storage: Storage, event: VkEvent, page: int = 0) -> None:
@@ -2012,8 +2027,7 @@ async def _rating_alltime(bot: VkMessenger, storage: Storage, event: VkEvent, pa
         text,
         reply_markup=inline_keyboard(
             nav,
-            [("🏆 В меню рейтинга", "rating:menu")],
-            [("⬅️ В меню", "rating:exit")],
+            [("⬅️ К разделам рейтинга", "rating:menu")],
         ),
     )
 
@@ -2033,8 +2047,7 @@ async def _rating_season(bot: VkMessenger, storage: Storage, event: VkEvent, pag
         text,
         reply_markup=inline_keyboard(
             nav,
-            [("🏆 В меню рейтинга", "rating:menu")],
-            [("⬅️ В меню", "rating:exit")],
+            [("⬅️ К разделам рейтинга", "rating:menu")],
         ),
     )
 
@@ -2046,7 +2059,7 @@ async def _rating_achievements(bot: VkMessenger, storage: Storage, event: VkEven
     await bot.send_message(
         int(event.peer_id),
         text,
-        reply_markup=inline_keyboard([("🏆 В меню рейтинга", "rating:menu")]),
+        reply_markup=inline_keyboard([("⬅️ К разделам рейтинга", "rating:menu")]),
     )
 
 
@@ -2057,7 +2070,7 @@ async def _rating_factions(bot: VkMessenger, storage: Storage, event: VkEvent) -
     await bot.send_message(
         int(event.peer_id),
         text,
-        reply_markup=inline_keyboard([("🏆 В меню рейтинга", "rating:menu")]),
+        reply_markup=inline_keyboard([("⬅️ К разделам рейтинга", "rating:menu")]),
     )
 
 
@@ -2068,7 +2081,7 @@ async def _rating_seasoninfo(bot: VkMessenger, storage: Storage, event: VkEvent)
     await bot.send_message(
         int(event.peer_id),
         text,
-        reply_markup=inline_keyboard([("🏆 В меню рейтинга", "rating:menu")]),
+        reply_markup=inline_keyboard([("⬅️ К разделам рейтинга", "rating:menu")]),
     )
 
 
@@ -2087,6 +2100,8 @@ async def _rating_callback(bot: VkMessenger, storage: Storage, event: VkEvent, p
         await _rating_achievements(bot, storage, event)
     elif cmd == "seasoninfo":
         await _rating_seasoninfo(bot, storage, event)
+    elif cmd == "stats":
+        await _rating_stats(bot, storage, event)
     elif cmd == "menu":
         await _rating_open(bot, storage, event)
     else:
@@ -2504,6 +2519,7 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
         TRAVEL_SPEED_TRUCK,
         TRANSPORT_QUEST_REWARD_MULT,
         describe_travel_fuel_status,
+        can_use_n2o_during_travel,
         format_location_display,
         is_traveling,
         needs_field_repair,
@@ -2516,15 +2532,17 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
         return
     traveling = is_traveling(player)
     if traveling:
-        text = f"{format_location_display(player)}\n\nПереход уже идёт — время придёт уведомление."
-        await bot.send_message(
-            int(event.peer_id),
-            text,
-            reply_markup=inline_keyboard(
-                [("⏱ Статус перехода", "travel:status")],
-                [("⬅️ В меню", "walk:exit")],
-            ),
+        can_n2o = can_use_n2o_during_travel(storage, user_id)
+        kb_rows: list[list] = [[("⏱ Статус перехода", "travel:status")]]
+        if can_n2o:
+            kb_rows.append([("💨 Закись азота (N2O, ÷2 остаток)", "travel:n2o")])
+        kb_rows.append([("⬅️ В меню", "walk:exit")])
+        text = (
+            f"{format_location_display(player)}\n"
+            "⏱ Отсчёт времени — в отдельном сообщении с таймером.\n\n"
+            "Пока идёт переход, другие действия на точке недоступны."
         )
+        await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*kb_rows))
         return
 
     locations = _travel_locations(storage, player)
@@ -2545,15 +2563,16 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
     rows.append(nav)
 
     rules = (
-        "Выбери локацию, затем транспорт.\n"
+        "Выбери локацию, затем транспорт (велик доступен даже если есть Нива/грузовик).\n"
         f"Пешком ×1, велосипед ×{TRAVEL_SPEED_BICYCLE:g} "
-        f"(награда контракта ×{TRANSPORT_QUEST_REWARD_MULT['bicycle']:g} если доехал на нём), "
-        f"Нива ×{TRAVEL_SPEED_NIVA:g}, грузовик ×{TRAVEL_SPEED_TRUCK:g}.\n"
-        "Переход занимает реальное время (1 игровая минута ≈ 10 сек).\n\n"
+        f"(+награда контракта ×{TRANSPORT_QUEST_REWARD_MULT['bicycle']:g} если доехал на нём), "
+        f"Нива ×{TRAVEL_SPEED_NIVA:g}, грузовик ×{TRAVEL_SPEED_TRUCK:g} (+ дизель).\n"
+        "Переход занимает реальное время (1 игровая мин ≈ 10 сек).\n\n"
         f"{describe_travel_fuel_status(player)}"
     )
     if needs_field_repair(player):
-        rules += "\n\n⚠️ Техника сломана — почини её у торговца (раздел «Ремонт»)."
+        rules += "\n\n⚠️ Техника сломана — подлатай её кнопкой ниже (бесплатно, до 5%), чтобы уехать."
+        rows.append([("🔧 Подлатать технику до 5%", "travel:fieldrepair")])
     await bot.send_message(
         int(event.peer_id),
         rules,
@@ -2626,6 +2645,18 @@ async def _travel_callback(bot: VkMessenger, storage: Storage, event: VkEvent, p
             status or "Сейчас ты никуда не едешь.",
             reply_markup=inline_keyboard([("🗺 Переходы", "travel:open")]),
         )
+    elif cmd == "fieldrepair":
+        from app.game_logic import field_repair_vehicle
+
+        result = field_repair_vehicle(storage, int(event.user_id))
+        await bot.send_message(int(event.peer_id), getattr(result, "text", str(result)))
+        await _travel_open(bot, storage, event, 0)
+    elif cmd == "n2o":
+        from app.game_logic import apply_n2o_to_active_travel
+
+        result = apply_n2o_to_active_travel(storage, int(event.user_id))
+        await bot.send_message(int(event.peer_id), getattr(result, "text", str(result)))
+        await _travel_open(bot, storage, event, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -2637,8 +2668,8 @@ def _hunt_keyboard():
     return inline_keyboard(
         [("⬆️ Вперёд", "hunt:up")],
         [("⬅️ Влево", "hunt:left"), ("⬇️ Назад", "hunt:down"), ("➡️ Вправо", "hunt:right")],
-        [("🔫 ⬆️", "hunt:shoot:up")],
-        [("🔫 ⬅️", "hunt:shoot:left"), ("🔫 ⬇️", "hunt:shoot:down"), ("🔫 ➡️", "hunt:shoot:right")],
+        [("🔫⬆", "hunt:shoot:up")],
+        [("🔫⬅", "hunt:shoot:left"), ("🔫⬇", "hunt:shoot:down"), ("🔫➡", "hunt:shoot:right")],
         [("🏃 Свалить", "hunt:leave"), ("🔄 Обновить", "hunt:refresh")],
         [("⬅️ В меню", "hunt:exit")],
     )
@@ -2901,36 +2932,37 @@ async def _events_callback(bot: VkMessenger, storage: Storage, event: VkEvent, p
 # ---------------------------------------------------------------------------
 
 
-async def _tutorial_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import TUTORIAL_PAGES, build_tutorial_page
+def _tutorial_nav_keyboard(page: int, total: int):
+    """Навигация обучения как tutorial_keyboard в ТГ: только стрелки и счётчик."""
+    nav: list[tuple[str, str]] = []
+    if page > 0:
+        nav.append(("⬅️", f"tutorial:page:{page - 1}"))
+    nav.append((f"{page + 1}/{total}", f"tutorial:page:{page}"))
+    if page + 1 < total:
+        nav.append(("➡️", f"tutorial:page:{page + 1}"))
+    return inline_keyboard(nav)
 
-    text, _page, _total = build_tutorial_page(0)
-    await bot.send_message(
-        int(event.peer_id),
-        text,
-        reply_markup=inline_keyboard(
-            [("➡️ Дальше", "tutorial:page:1")],
-            [("🎁 Забрать награду", "tutorial:claim")],
-            [("⬅️ В меню", "tutorial:exit")],
-        ),
-    )
+
+async def _tutorial_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import build_tutorial_page
+
+    text, page, total = build_tutorial_page(0)
+    await bot.send_message(int(event.peer_id), text, reply_markup=_tutorial_nav_keyboard(page, total))
 
 
 async def _tutorial_page(bot: VkMessenger, storage: Storage, event: VkEvent, page: int) -> None:
-    from app.game_logic import build_tutorial_page
+    from app.game_logic import build_tutorial_page, claim_tutorial_completion
 
     text, safe_page, total = build_tutorial_page(int(page or 0))
-    rows: list[list] = []
-    nav: list[tuple[str, str]] = []
-    if safe_page > 0:
-        nav.append(("⬅️ Назад", f"tutorial:page:{safe_page - 1}"))
-    if safe_page < total - 1:
-        nav.append(("➡️ Дальше", f"tutorial:page:{safe_page + 1}"))
-    if nav:
-        rows.append(nav)
-    rows.append([("🎁 Забрать награду", "tutorial:claim")])
-    rows.append([("⬅️ В меню", "tutorial:exit")])
-    await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*rows))
+    bonus_note = ""
+    if safe_page == total - 1:
+        # Как в ТГ: награда выдаётся автоматически, когда дошли до последней страницы.
+        bonus_note = claim_tutorial_completion(storage, int(event.user_id))
+    await bot.send_message(
+        int(event.peer_id),
+        text + bonus_note,
+        reply_markup=_tutorial_nav_keyboard(safe_page, total),
+    )
 
 
 async def _tutorial_claim(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
@@ -2958,12 +2990,20 @@ async def _tutorial_callback(bot: VkMessenger, storage: Storage, event: VkEvent,
 # ---------------------------------------------------------------------------
 
 
-def _notify_keyboard():
-    from app.game_logic import NOTIFY_PREF_KEYS, NOTIFY_PREF_LABELS
+# Метки переключателей уведомлений — как NOTIFY_PREF_TOGGLE_LABELS в ТГ.
+_NOTIFY_TOGGLE_LABELS: dict[str, str] = {
+    "emission": "☢️ Выброс",
+    "death": "☠️ Смерть",
+    "coop": "👥 Совместная вылазка",
+    "garage": "🏚 Гараж (аренда)",
+}
 
+
+def _notify_keyboard(prefs: dict[str, bool]):
     rows: list[list] = []
-    for key in NOTIFY_PREF_KEYS:
-        rows.append([(NOTIFY_PREF_LABELS.get(key, key), f"notify:toggle:{key}")])
+    for key, label in _NOTIFY_TOGGLE_LABELS.items():
+        mark = "✅" if prefs.get(key, True) else "🔕"
+        rows.append([(f"{mark} {label}", f"notify:toggle:{key}")])
     rows.append([("⬅️ В меню", "notify:exit")])
     return inline_keyboard(*rows)
 
@@ -2972,7 +3012,7 @@ async def _notify_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
     from app.game_logic import build_notify_prefs_text, get_notify_prefs
 
     prefs = get_notify_prefs(storage, int(event.user_id))
-    await bot.send_message(int(event.peer_id), build_notify_prefs_text(prefs), reply_markup=_notify_keyboard())
+    await bot.send_message(int(event.peer_id), build_notify_prefs_text(prefs), reply_markup=_notify_keyboard(prefs))
 
 
 async def _notify_toggle(bot: VkMessenger, storage: Storage, event: VkEvent, key: str) -> None:
@@ -2980,7 +3020,7 @@ async def _notify_toggle(bot: VkMessenger, storage: Storage, event: VkEvent, key
 
     prefs = get_notify_prefs(storage, int(event.user_id))
     prefs = set_notify_pref(storage, int(event.user_id), key, not prefs.get(key, True))
-    await bot.send_message(int(event.peer_id), build_notify_prefs_text(prefs), reply_markup=_notify_keyboard())
+    await bot.send_message(int(event.peer_id), build_notify_prefs_text(prefs), reply_markup=_notify_keyboard(prefs))
 
 
 async def _notify_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
@@ -3810,9 +3850,9 @@ async def _locmap_zonemap(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     if player is None:
         return
     caption = (
-        "🗺 Карта Зоны\n"
-        "Кольцо = тип точки (база/ресурсы/интерес), заливка = группировка-контролёр.\n"
-        "Жёлтая рамка — твоя локация, «+» — территория твоей группировки (NPC — сила)."
+        "Карта Зоны.\n"
+        "Метка: тип территории; контроль; сила NPC.\n"
+        "Кольцо = тип точки, заливка = фракция."
     )
     kb = inline_keyboard(
         [("🗺 Переходы", "travel:open"), ("🔄 Обновить", "locmap:zonemap")],
@@ -4057,11 +4097,20 @@ async def _blockpost_gate(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         return False
     if not location_requires_blockpost(storage, player):
         return False
+    location = str(player.location)
+    owner = str((storage.get_location(location) or {}).get("controlled_by") or "")
+    text = (
+        f"🚧 Блокпост «{owner}»\n\n"
+        "Локация под контролем чужой группировки. Вход только через блокпост:\n"
+        "2 лёгких бойца. Прорвись силой (урон и шанс зависят от твоей силы) — "
+        "и ходи по локации свободно.\n\n"
+        "После прорыва блокпост остаётся прорванным для тебя."
+    )
     await bot.send_message(
         int(event.peer_id),
-        "🚧 Локация под контролем чужой группировки. Прорваться можно только через блокпост (2 лёгких бойца).",
+        text,
         reply_markup=inline_keyboard(
-            [("🥊 Прорвать блокпост", "locmap:blockpost")],
+            [("⚔️ Прорвать блокпост", "locmap:blockpost")],
             [("⬅️ В меню", "walk:exit")],
         ),
     )
@@ -4109,7 +4158,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.21"
+APP_VERSION = "1.0.22"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4969,11 +5018,44 @@ async def _inventory_use(bot: VkMessenger, storage: Storage, event: VkEvent, ite
     await _inventory(bot, storage, event)
 
 
+async def _inventory_consumables(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Экран «🧰 Расходники» (как в ТГ): только предметы, которые можно употребить."""
+    from app.game_logic import ITEM_LABELS
+
+    player = storage.get_character(int(event.user_id), refresh_energy=False)
+    if player is None:
+        await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
+        return
+    inv = getattr(player, "inventory", {}) or {}
+    rows: list[list] = []
+    for key in _USE_ITEM_MAP:
+        count = int(inv.get(key, 0))
+        if count <= 0:
+            continue
+        rows.append([(f"💊 {ITEM_LABELS.get(key, key)} ×{count}", f"inventory:use:{key}")])
+    if not rows:
+        rows.append([("Расходников нет", "inventory:root")])
+    rows.append([("⬅️ В инвентарь", "inventory:root")])
+    await bot.send_message(int(event.peer_id), "🧰 Расходники", reply_markup=inline_keyboard(*rows))
+
+
 async def _inventory_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
     parts = payload.split(":")
     cmd = parts[1] if len(parts) > 1 else ""
     if cmd == "use" and len(parts) >= 3:
+        if parts[2] == "stash_case":
+            # «📦 Открыть тайник» — отдельный движковый флоу открытия кейса.
+            from app.game_logic import open_stash
+
+            result = open_stash(storage, int(event.user_id))
+            await bot.send_message(int(event.peer_id), getattr(result, "text", str(result)))
+            await _inventory(bot, storage, event)
+            return
         await _inventory_use(bot, storage, event, parts[2])
+    elif cmd == "consumables":
+        await _inventory_consumables(bot, storage, event)
+    elif cmd == "root":
+        await _inventory(bot, storage, event)
     else:
         await _inventory(bot, storage, event)
 
@@ -5727,6 +5809,8 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await _locmap_zonemap(bot, storage, event)
     elif norm in ("📍 Локация", "локация"):
         await _walk_open(bot, storage, event)
+    elif norm in ("🗺 Переход", "🗺 Переходы", "переход", "переходы"):
+        await _travel_open(bot, storage, event, 0)
     elif norm in ("👥 Игроки", "игроки"):
         await _pda_players(bot, storage, event)
     elif norm in ("🤝 Обмен", "обмен"):
@@ -5746,7 +5830,7 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     elif norm == "🎒 Инвентарь":
         await _inventory(bot, storage, event)
     elif norm in ("🏕 Вылазка", "вылазка"):
-        await _walk_open(bot, storage, event)
+        await _sortie_open(bot, storage, event)
     elif norm in ("🛒 Торговец", "торговец"):
         await _trader_menu(bot, storage, event)
     elif norm in ("🛠 Техник", "техник"):
@@ -5763,7 +5847,7 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         await _trader_equip(bot, storage, event)
     elif norm == "⬅️ В меню":
         await _menu(bot, storage, event)
-    elif norm=="🏛 Группировка" or norm == "группировка":
+    elif norm in ("🏛 Группировка", "👥 Группировка", "группировка"):
         await _faction_open(bot, storage, event)
     elif norm in ("🏛 Обзор", "обзор"):
         await _faction_overview(bot, storage, event)

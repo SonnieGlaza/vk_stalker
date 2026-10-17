@@ -383,6 +383,31 @@ def test_kpk_keyboard_has_all_sections(env):
     assert labels2[-1] == "⬅️ В меню"
 
 
+def test_sortie_and_rating_tg_labels(env):
+    """«🏕 Вылазка» — сорти-меню как в ТГ; рейтинг — метки ratings_keyboard как в ТГ."""
+    import json
+
+    from app.vk_platform import keyboard_to_json
+
+    st, m = env
+
+    # Сорти-клавиатура — как sortie_keyboard в ТГ.
+    kb = json.loads(keyboard_to_json(bot._sortie_keyboard()))
+    labels = [b["action"]["label"] for row in kb["buttons"] for b in row]
+    assert labels == ["⚔️ Война", "🗺 Переход", "⚔️ Арена", "🪖 Рейды", "📍 Локация", "⬅️ В меню"], labels
+    # Рейтинг — метки ratings_keyboard в ТГ + «📊 Моя статистика».
+    kb = json.loads(keyboard_to_json(bot._rating_keyboard()))
+    labels = [b["action"]["label"] for row in kb["buttons"] for b in row]
+    for want in (
+        "📊 Моя статистика", "🏆 Рейтинг за всё время", "📅 Рейтинг за сезон",
+        "🏅 Рейтинг группировок", "🎖 Достижения и медали",
+    ):
+        assert want in labels, labels
+    # «📊 Моя статистика» отвечает текстом статистики.
+    _run(_click_cbs(st, m, ["rating:stats"]))
+    assert "Статистика" in _merged(m.sent), _merged(m.sent)[:160]
+
+
 def test_info_text_full(env):
     """«ℹ️ Информация» — полная справка как в ТГ (команды, механики, маркет)."""
     text = bot._build_info_text()
