@@ -1974,14 +1974,29 @@ async def _buildings_callback(bot: VkMessenger, storage: Storage, event: VkEvent
 
 async def handle_event(bot: VkMessenger, event: VkEvent) -> None:
     storage = get_storage()
-    if event.kind == "callback":
-        # VK держит нажатую inline-кнопку в состоянии «загрузки», пока бот не ответит
-        # на message_event вызовом messages.sendMessageEventAnswer. Отвечаем сразу:
-        # долгая обработка (рендер кадров дуэлей/арены) не должна превысить лимит ответа.
-        await _answer_message_event(bot, event)
-        await _handle_callback(bot, storage, event)
-    else:
-        await _handle_message(bot, storage, event)
+    _t0 = time.monotonic()
+    try:
+        if event.kind == "callback":
+            # VK держит нажатую inline-кнопку в состоянии «загрузки», пока бот не ответит
+            # на message_event вызовом messages.sendMessageEventAnswer. Отвечаем сразу:
+            # долгая обработка (рендер кадров дуэлей/арены) не должна превысить лимит ответа.
+            await _answer_message_event(bot, event)
+            await _handle_callback(bot, storage, event)
+        else:
+            await _handle_message(bot, storage, event)
+    finally:
+        detail = ""
+        if event.text:
+            detail = f", text={event.text[:40]!r}"
+        elif event.payload:
+            detail = f", payload={event.payload[:60]!r}"
+        logger.info(
+            "СОБЫТИЕ %s (user=%s%s) обработано за %.2f с",
+            event.kind,
+            event.user_id,
+            detail,
+            time.monotonic() - _t0,
+        )
 
 
 async def _answer_message_event(bot: VkMessenger, event: VkEvent) -> None:
@@ -4215,7 +4230,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.32"
+APP_VERSION = "1.0.33"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -5547,6 +5562,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
     while True:
         await asyncio.sleep(60)
         tick += 1
+        _tick_t0 = time.monotonic()
         storage = get_storage()
         try:
             from app.game_logic import process_due_travels, try_auto_turn_in_contract
@@ -5744,6 +5760,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
                         logger.debug("offline survival/respawn failed (%s): %s", user_id, exc)
             except Exception:
                 logger.exception("Offline survival tick failed")
+        logger.info("zone tick #%d занял %.2f с", tick, time.monotonic() - _tick_t0)
 
 
 async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
