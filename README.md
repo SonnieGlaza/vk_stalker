@@ -30,11 +30,13 @@ DATABASE_URL=postgresql://...   # или DB_PATH=/data/stalker_game.db
 ADMIN_IDS=ваш_vk_user_id
 ```
 
-Запуск:
+Запуск (Long Poll — основной режим, без домена/вебхука):
 
 ```bash
-python run_vk.py
+python run_vk.py --longpoll
 ```
+
+Callback API (webhook) — только если нужны события пополнений: `python run_vk.py --webhook`.
 
 ### Уже работает
 
@@ -108,9 +110,12 @@ python run_vk.py
   (149₽=1500 RU, 249₽=3000, 499₽=6000, 999₽=12000) или своя сумма; выбор «карман / казна ГП»,
   ссылка VK_MARKET_URL на товар сообщества, кнопка «✅ Я оплатил» создаёт заявку,
   админ зачисляет командой `confirm_topup ник`; через Callback API событие `market_order_new`
-  зачисляет покупку автоматически (`handle_market_order`, сверка цены с заявкой);
+  зачисляет покупку автоматически (`handle_market_order`, сверка цены с заявкой)
+  — работает только в режиме Callback API (webhook); в Long Poll оплаты подтверждаются админом
+  командой `confirm_topup ник`;
 - после смерти в PvP/аренах сразу выдаётся экран смерти и авто-респавн;
-- VK Long Poll + Callback API (webhook, `run_vk.py --webhook`/`VK_USE_CALLBACK=1`) + inline-кнопки с payload;
+- VK Long Poll (основной режим, `--longpoll`, без входящего адреса) + Callback API
+  (webhook, `run_vk.py --webhook`/`VK_USE_CALLBACK=1`) + inline-кнопки с payload;
 - **inline-клавиатуры шлют кнопки типа `callback`** (иначе VK отправлял текст кнопки в чат
   вместо события `message_event` — все inline-меню молчали); динамический обход всех меню:
   373 кнопки, 0 ошибок; нажатия кнопок закрываются `messages.sendMessageEventAnswer`
@@ -120,7 +125,8 @@ python run_vk.py
   а не только ручной `/respawn` (раньше блокировала проверка `player_busy_reason`);
 - `/cancel` и `/menu` работают даже во время ввода суммы/цены (FSM) — раньше «/cancel» трактовался как число;
 - Postgres: короткий таймаут подключения и keepalive — фон не застревает при перезапусках БД хостинга;
-- `start.sh` → `python3 run_vk.py --webhook` (явный Callback-режим, без зависимости от env);
+- `start.sh` → `python3 run_vk.py --longpoll` (Long Poll: бот сам ходит к VK, входящий адрес
+  не нужен; в группе должны быть включены «Сообщения сообщества» и Long Poll API);
 - КПК: PNG-карточка рисует пол по-русски (Мужской/Женский), выбор пола пишет в БД только valid-значения;
 - топ-ап «в казну группировки» корректно сохраняет цель (не превращается в «на карман»).
 - **v1.0.22 — сверка всего бота с ТГ (кнопки и тексты, буква в букву)**:
@@ -173,6 +179,13 @@ python run_vk.py
   подтверждении — совпал ли код с присланным VK; это помогает, когда VK отвечает
   «Can't connect to server» (неправильный/старый домен, приложение не поднялось или
   поднялось в longpoll-режиме без вебхука).
+- **v1.0.29 — переключение на Long Poll API (основной режим)**: `start.sh` запускает
+  `--longpoll` — бот сам ходит к VK, входящий адрес/код подтверждения Callback API не нужны
+  (VK не мог достучаться до нового Railway-домена из своей сети: «Can't connect to server»
+  при исправном сервере). Флаг `--longpoll` теперь форсирует Long Poll даже при
+  `VK_USE_CALLBACK=1`; при старте понятная ошибка, если в группе не включён Long Poll API.
+  Нюанс: автозачисление оплат через `market_order_new` работает только в Callback-режиме —
+  в Long Poll топ-ап подтверждается админом (`confirm_topup ник`).
 - **v1.0.28 — «не подхватывает VK»**: при старте бот печатает публичный адрес Railway
   (`RAILWAY_PUBLIC_DOMAIN`) — ровно его надо вписать в «Адрес» Callback API в VK;
   если домена нет — в логе прямая подсказка сгенерировать его (Settings → Networking →

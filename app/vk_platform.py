@@ -630,7 +630,16 @@ def _poll_worker(settings: Settings, queue: "asyncio.Queue[VkEvent]", stop: "thr
     try:
         vk = vk_api.VkApi(token=settings.vk_token, api_version="5.131")
         # auth() не вызываем (см. VkMessenger.__init__): токен уже в конструкторе.
-        lp = VkBotLongPoll(vk, group_id=settings.group_id, wait=25)
+        try:
+            lp = VkBotLongPoll(vk, group_id=settings.group_id, wait=25)
+        except Exception as exc:
+            logger.error(
+                "VK Long Poll не может стартовать: %s. Включи в группе: Настройки → Сообщения → "
+                "«Сообщения сообщества: Включены»; Настройки → Работа с API → Long Poll API → "
+                "«Включён»; у токена должно быть право «Сообщения сообщества».",
+                exc,
+            )
+            return
         logger.info("VK Long Poll запущен (group_id=%s)", settings.group_id)
         while not stop.is_set():
             try:

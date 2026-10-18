@@ -4214,7 +4214,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.28"
+APP_VERSION = "1.0.29"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -6320,9 +6320,14 @@ def main(use_webhook: bool | None = None) -> None:
     _init_admin_ids(settings)
     get_storage(settings)
     _probe_db()
-    # VK_USE_CALLBACK=1 (или флаг --webhook) всегда вводит webhook-режим;
-    # Long Poll остаётся только если явно выключен callback.
-    use_callback_mode = bool(settings.use_callback) or bool(use_webhook)
+    # VK_USE_CALLBACK=1 (или флаг --webhook) вводит webhook-режим;
+    # флаг --longpoll (use_webhook=False) форсирует Long Poll даже при VK_USE_CALLBACK=1.
+    if use_webhook is True:
+        use_callback_mode = True
+    elif use_webhook is False:
+        use_callback_mode = False
+    else:
+        use_callback_mode = bool(settings.use_callback)
     logger.info("Запуск vk_stalker (version=%s, mode=%s)", APP_VERSION, "webhook" if use_callback_mode else "longpoll")
     if use_callback_mode:
         from app.vk_platform import run_webhook

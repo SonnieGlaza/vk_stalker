@@ -20,8 +20,8 @@ from app.bot import main
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    # Флаг --webhook включает Callback API (webhook) даже без VK_USE_CALLBACK=1;
-    # --longpoll форсирует Long Poll, вопреки env. Без аргументов — режим из env.
+    # Флаг --webhook включает Callback API (webhook), --longpoll форсирует Long Poll
+    # ДАЖЕ если в env стоит VK_USE_CALLBACK=1; без аргументов — режим из env.
     force_webhook: bool | None = None
     if "--webhook" in sys.argv:
         force_webhook = True
