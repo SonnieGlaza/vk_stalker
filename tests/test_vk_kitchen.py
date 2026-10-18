@@ -319,6 +319,43 @@ def test_pda_sections_respond(env):
     _run(_click_cbs(st, m, ["pda:stats", "pda:menu"]))
 
 
+def test_pda_chats_links_like_tg(env):
+    """«💬 Чаты» — как _build_pda_chats_text в ТГ: канал, общий чат, чат группировки."""
+    st, m = env
+    assert set(bot.FACTION_CHATS) == {"Нейтралы", "Бандиты", "Долг", "Свобода"}
+    for link in list(bot.FACTION_CHATS.values()) + [bot.COMMON_CHAT]:
+        assert link.startswith("https://vk.me/join/"), link
+    m.group_id = -123456789  # страница сообщества = «канал обновлений»
+
+    async def run():
+        # Долг (как в env) — только свой чат группировки, плюс общий.
+        m.sent.clear()
+        await bot._pda_chats(m, st, _ev("💬 Чаты"))
+        text = _merged(m.sent)
+        assert "📟 КПК — связь" in text, text[:200]
+        assert "📢 Канал обновлений бота:" in text and "https://vk.com/club123456789" in text, text[:200]
+        assert "🌐 Общий чат Зоны:" in text and bot.COMMON_CHAT in text, text[:200]
+        assert f"🛡️ Чат группировки «Долг»:" in text and bot.FACTION_CHATS["Долг"] in text, text[:200]
+        assert bot.FACTION_CHATS["Свобода"] not in text, "чужой чат группировки не показываем"
+        # Свобода.
+        st.set_faction(UID, "Свобода")
+        m.sent.clear()
+        await bot._pda_chats(m, st, _ev("💬 Чаты"))
+        assert bot.FACTION_CHATS["Свобода"] in _merged(m.sent), _merged(m.sent)[:200]
+        # Монолит — закрытая группировка.
+        st.set_faction(UID, "Монолит")
+        m.sent.clear()
+        await bot._pda_chats(m, st, _ev("💬 Чаты"))
+        assert "закрытая группировка" in _merged(m.sent), _merged(m.sent)[:200]
+        # Без группировки — подсказка.
+        st.create_character(UID + 2, "Одиночка", "male")
+        m.sent.clear()
+        await bot._pda_chats(m, st, SimpleNamespace(user_id=UID + 2, peer_id=UID + 2))
+        assert "появится после выбора группировки" in _merged(m.sent), _merged(m.sent)[:200]
+
+    _run(run())
+
+
 def test_pda_sbor_button(env):
     """Кнопка «📣 Сбор» (только командир) в reply-меню КПК отвечает, а не «Не понял»."""
     st, m = env

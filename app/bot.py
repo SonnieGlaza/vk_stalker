@@ -219,17 +219,52 @@ async def _pda_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     )
 
 
+FACTION_CHATS = {
+    "Нейтралы": "https://vk.me/join/JrBlhRBbIp1LtqzvHHhkLz0EFE2cEMtj6Jc=",
+    "Бандиты": "https://vk.me/join/exRV3PXAkiB9zwYWkCRL71Cpgh_XKMkzBD0=",
+    "Долг": "https://vk.me/join/e7Ofe/ROYEmeapHytOfwnZQjkeJie_RoQao=",
+    "Свобода": "https://vk.me/join/2o5NwLRHRGk44bDfR/pfxGAciAJNsT_vuZk=",
+}
+COMMON_CHAT = "https://vk.me/join/Q9/ZhnAbkyCWEpCSNHU2MVLL0lnoLshrRcA="
+
+
 async def _pda_chats(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Раздел КПК «💬 Чаты» — как «📟 КПК — связь» в ТГ: канал, общий чат, чат группировки."""
+    player = storage.get_character(int(event.user_id), refresh_energy=True)
+    if player is None:
+        await bot.send_message(event.peer_id, "Сначала создай персонажа через «Старт».")
+        return
     group_id = getattr(bot, "group_id", None)
-    club = f"https://vk.com/club{abs(int(group_id))}" if group_id else None
+    update_channel = f"https://vk.com/club{abs(int(group_id))}" if group_id else "— ссылка появится, когда сообщество откроет страницу."
+    faction_chat = FACTION_CHATS.get(player.faction or "")
     lines = [
-        "💬 Чаты Зоны",
+        "📟 КПК — связь",
         "",
-        "📢 Новости и страница сообщества:",
-        club if club else "— ссылка появится, когда сообщество откроет страницу.",
+        f"📢 Канал обновлений бота:\n{update_channel}",
         "",
-        "🛡️ Чат группировки открывает её командир; ссылку уточняй у лидера.",
+        f"🌐 Общий чат Зоны:\n{COMMON_CHAT}",
     ]
+    if faction_chat:
+        lines.extend(
+            [
+                "",
+                f"🛡️ Чат группировки «{player.faction}»:\n{faction_chat}",
+            ]
+        )
+    elif player.faction == "Монолит":
+        lines.extend(
+            [
+                "",
+                "🛡️ «Монолит» — закрытая группировка: публичная ссылка на чат не публикуется.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "🛡️ Чат группировки появится после выбора группировки.",
+            ]
+        )
     await bot.send_message(
         int(event.peer_id),
         "\n".join(lines),
@@ -4158,7 +4193,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.22"
+APP_VERSION = "1.0.23"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
