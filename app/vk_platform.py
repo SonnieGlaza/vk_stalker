@@ -432,17 +432,25 @@ class VkMessenger:
             logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
             return None
         last_exc: Exception | None = None
+        last_detail = ""
         for field in ("photo", "file1", "file0"):
             try:
+                logger.info("photo upload: попытка поле=%s на %s...", field, upload_url[:70])
                 files = {field: ("photo.jpg", io.BytesIO(data), "image/jpeg")}
-                resp = self.vk.http.post(upload_url, files=files)
-                payload = resp.json() if hasattr(resp, "json") else resp
+                # Жёсткий таймаут: мёртвый upload-сервер не должен висеть минуту.
+                resp = self.vk.http.post(upload_url, files=files, timeout=(5, 10))
+                try:
+                    payload = resp.json() if hasattr(resp, "json") else resp
+                except Exception:
+                    payload = None
                 if not isinstance(payload, dict):
+                    last_detail = f"ответ не JSON (HTTP {getattr(resp, 'status_code', '?')})"
                     continue
                 photo = payload.get("photo")
                 if not photo:
                     # Новый протокол (bulk_upload) возвращает files/sha/secret без photo —
                     # сохранить такой ответ нельзя; пробуем следующее имя поля.
+                    last_detail = f"в ответе нет photo: {str(payload)[:120]}"
                     continue
                 saved = self.vk.method(
                     "photos.saveMessagesPhoto",
@@ -455,11 +463,17 @@ class VkMessenger:
                         peer_id, field, upload_url[:44],
                     )
                     return att
+                last_detail = "saveMessagesPhoto вернул не-attachment"
             except Exception as exc:
                 last_exc = exc
                 logger.debug("photo upload (поле %s) failed (peer %s): %s", field, peer_id, exc)
+        reason = last_detail or "нет данных"
         if last_exc is not None:
-            logger.warning("photo upload failed (peer %s): %s", peer_id, last_exc)
+            reason = f"{last_exc}; {reason}"
+        logger.warning(
+            "photo upload failed (peer %s, upload_url=%s...): %s",
+            peer_id, upload_url[:60], reason,
+        )
         return None
 
     def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
@@ -470,7 +484,7 @@ class VkMessenger:
             if not upload_url:
                 return None
             files = {"file": ("photo.jpg", io.BytesIO(data), "image/jpeg")}
-            resp = self.vk.http.post(upload_url, files=files)
+            resp = self.vk.http.post(upload_url, files=files, timeout=(5, 10))
             payload = resp.json()
             file_token = str(payload.get("file") or "")
             if not file_token:
