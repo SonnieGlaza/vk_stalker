@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Long Poll API — бот сам ходит к VK, входящий адрес/вебхук не нужен.
-# Перед запуском включи в группе: Настройки → Сообщения → «Сообщения сообщества: Включены»
-# и Настройки → Работа с API → Long Poll API → «Включён» (см. README).
-python3 run_vk.py --longpoll
+# Callback API (webhook) — мгновенная доставка событий от VK.
+# Адрес для VK: https://<public-domain>/callback (см. лог при старте).
+# Альтернатива без домена: python3 run_vk.py --longpoll (доставка ~40-60 с).
+python3 run_vk.py --webhook

@@ -816,13 +816,19 @@ def run_webhook(
     async def _ping(_: web.Request) -> web.Response:
         return web.Response(text="ok")
 
+    async def _callback_ping(_: web.Request) -> web.Response:
+        # GET на /callback — если какой-то клиент (в т.ч. VK при http->https-редиректе)
+        # делает GET вместо POST, вернём код подтверждения, а не «ok».
+        code = (settings.confirmation_code or "").strip()
+        return web.Response(text=code if code else "ok")
+
     async def _version(_: web.Request) -> web.Response:
         from app.bot import APP_VERSION
 
         return web.Response(text=f"vk_stalker {APP_VERSION}")
 
     app.router.add_get("/", _ping)
-    app.router.add_get("/callback", _ping)
+    app.router.add_get("/callback", _callback_ping)
     app.router.add_get("/version", _version)
 
     async def _run() -> None:
