@@ -55,6 +55,18 @@ def _storage_reset() -> None:
     _storage = None
 
 
+def _probe_db() -> None:
+    """Живая проверка БД при старте: если хостинг-БД недоступна (Railway Postgres упал/
+    перезапустился), видно сразу в логе — команды игроков будут молча падать (вебхук отвечает
+    200, но обработчик кидает исключение и юзер не получает ответа)."""
+    try:
+        st = get_storage()
+        st.get_meta("__startup_probe__")
+        logger.info("Подключение к БД: OK (backend=%s)", getattr(st, "backend", "?"))
+    except Exception:
+        logger.exception("Подключение к БД: ОШИБКА — на сообщения не будет ответов, пока БД недоступна")
+
+
 # ---------------------------------------------------------------------------
 # Клавиатуры
 # ---------------------------------------------------------------------------
@@ -4193,7 +4205,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.23"
+APP_VERSION = "1.0.25"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -6298,6 +6310,7 @@ def main(use_webhook: bool | None = None) -> None:
     settings = load_settings()
     _init_admin_ids(settings)
     get_storage(settings)
+    _probe_db()
     # VK_USE_CALLBACK=1 (или флаг --webhook) всегда вводит webhook-режим;
     # Long Poll остаётся только если явно выключен callback.
     use_callback_mode = bool(settings.use_callback) or bool(use_webhook)

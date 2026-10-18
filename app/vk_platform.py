@@ -404,19 +404,62 @@ class VkMessenger:
         # 3) гарантированный запасной путь — изображение-документ (показывается превью)
         attachment = self._upload_photo_document(data, peer_id)
         if attachment:
-            logger.info("photo upload: запасной путь doc (peer %s)", peer_id)
+            logger.warning(
+                "photo upload: photo-пути не сработали, картинка уйдёт документом-файлом "
+                "(peer %s) — см. предупреждения выше",
+                peer_id,
+            )
             return attachment
         return None
 
     def _upload_photo_messages(self, data: bytes, peer_id: int) -> str | None:
+        """Ручная загрузка фото в сообщение: VK менял протокол — старый upload.php принимает
+        поле `photo`, новый v2/bulk_upload — только `file1` (а vk_api 11.x шлёт `file0` и
+        молча роняет photo_messages, из-за чего фото уходило документом-файлом).
+        Пробуем все имена полей и сохраняем через photos.saveMessagesPhoto."""
         try:
-            bio = io.BytesIO(data)
-            bio.name = "photo.png"
-            resp = self._uploader.photo_messages([bio], peer_id=peer_id)
-            return self._photo_attachment(resp, peer_id)
+            server = self.vk.method("photos.getMessagesUploadServer", {"peer_id": int(peer_id)})
         except Exception as exc:
-            logger.debug("photo_messages upload failed (peer %s): %s", peer_id, exc)
+            logger.warning(
+                "photos.getMessagesUploadServer failed (peer %s): %s — проверь, что в токене "
+                "сообщества выданы права «фотографии»",
+                peer_id, exc,
+            )
             return None
+        upload_url = str((server or {}).get("upload_url") or "")
+        if not upload_url:
+            logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
+            return None
+        last_exc: Exception | None = None
+        for field in ("photo", "file1", "file0"):
+            try:
+                files = {field: ("photo.jpg", io.BytesIO(data), "image/jpeg")}
+                resp = self.vk.http.post(upload_url, files=files)
+                payload = resp.json() if hasattr(resp, "json") else resp
+                if not isinstance(payload, dict):
+                    continue
+                photo = payload.get("photo")
+                if not photo:
+                    # Новый протокол (bulk_upload) возвращает files/sha/secret без photo —
+                    # сохранить такой ответ нельзя; пробуем следующее имя поля.
+                    continue
+                saved = self.vk.method(
+                    "photos.saveMessagesPhoto",
+                    {"server": payload.get("server"), "photo": photo, "hash": payload.get("hash")},
+                )
+                att = self._photo_attachment(saved, peer_id)
+                if att:
+                    logger.info(
+                        "photo upload OK (peer %s, поле %s, upload_url=%s...)",
+                        peer_id, field, upload_url[:44],
+                    )
+                    return att
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("photo upload (поле %s) failed (peer %s): %s", field, peer_id, exc)
+        if last_exc is not None:
+            logger.warning("photo upload failed (peer %s): %s", peer_id, last_exc)
+        return None
 
     def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
         """Картинка как документ с превью: docs.getMessagesUploadServer + docs.save."""
@@ -689,14 +732,17 @@ def run_webhook(
     messenger = VkMessenger(settings)
 
     async def _on_callback(request: web.Request) -> web.Response:
+        from app.bot import APP_VERSION
+
+        _ok = "ok " + APP_VERSION  # версия видна прямо в access-логе Railway
         path = request.path
         try:
             data = await request.json()
         except Exception:
             logger.debug("callback: не-JSON POST на %s", path)
-            return web.Response(text="ok")
+            return web.Response(text=_ok)
         if not isinstance(data, dict):
-            return web.Response(text="ok")
+            return web.Response(text=_ok)
         typ = str(data.get("type") or "")
         if typ == "confirmation":
             code = (settings.confirmation_code or "").strip()
@@ -729,17 +775,23 @@ def run_webhook(
                     logger.info("market_order auto-confirmed: %s", result[:80])
             except Exception:
                 logger.exception("market_order_new handling failed")
-        return web.Response(text="ok")
+        return web.Response(text=_ok)
 
     app = web.Application()
     app.router.add_post("/callback", _on_callback)
     app.router.add_post("/", _on_callback)
     app.router.add_post("/{tail:.*}", _on_callback)
 
-    async def _ping(request: web.Request) -> web.Response:
+    async def _ping(_: web.Request) -> web.Response:
         return web.Response(text="ok")
 
+    async def _version(_: web.Request) -> web.Response:
+        from app.bot import APP_VERSION
+
+        return web.Response(text=f"vk_stalker {APP_VERSION}")
+
     app.router.add_get("/", _ping)
+    app.router.add_get("/version", _version)
 
     async def _run() -> None:
         runner = web.AppRunner(app)
