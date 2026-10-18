@@ -571,6 +571,17 @@ def test_pg_pool_reuses_and_limits(monkeypatch):
         db._PG_POOL.clear()
 
 
+def test_handle_event_longpoll_arg_order(env):
+    """handle_event(bot, event) — longpoll зовёт с мессенджером ПЕРВЫМ (был баг: порядок
+    перепутан, каждое событие падало 'VkMessenger has no attribute kind')."""
+    st, m = env
+    _run(bot.handle_event(m, _ev("📟 КПК")))
+    assert m.sent and "КПК сталкера" in _merged(m.sent), _merged(m.sent)[:160]
+    m.sent.clear()
+    _run(bot.handle_event(m, _ev_cb("pda:menu")))
+    assert m.sent and "Не понял" not in _merged(m.sent), _merged(m.sent)[:160]
+
+
 def test_profile_text_format(env):
     """Профиль: ник с медалями, ID STK-, фракция, звание (как в примере)."""
     st, m = env

@@ -186,6 +186,10 @@ Callback API (webhook) — только если нужны события по�
   `VK_USE_CALLBACK=1`; при старте понятная ошибка, если в группе не включён Long Poll API.
   Нюанс: автозачисление оплат через `market_order_new` работает только в Callback-режиме —
   в Long Poll топ-ап подтверждается админом (`confirm_topup ник`).
+- **v1.0.30 — фикс Long Poll**: в longpoll-режиме диспетчер звался с перепутанными
+  аргументами (`handle_event(event, messenger)` вместо `(messenger, event)`) — каждое
+  событие падало с `AttributeError: 'VkMessenger' object has no attribute 'kind'`;
+  исправлено, добавлен регрессионный тест (31→32).
 - **v1.0.28 — «не подхватывает VK»**: при старте бот печатает публичный адрес Railway
   (`RAILWAY_PUBLIC_DOMAIN`) — ровно его надо вписать в «Адрес» Callback API в VK;
   если домена нет — в логе прямая подсказка сгенерировать его (Settings → Networking →

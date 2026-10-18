@@ -660,7 +660,7 @@ def _poll_worker(settings: Settings, queue: "asyncio.Queue[VkEvent]", stop: "thr
 
 async def _async_main(
     settings: Settings,
-    handle_event: Callable[[VkEvent, VkMessenger], Awaitable[None]],
+    handle_event: Callable[[VkMessenger, VkEvent], Awaitable[None]],
     background: Iterable[Callable[[VkMessenger], Awaitable[None]]] = (),
 ) -> None:
     messenger = VkMessenger(settings)
@@ -675,7 +675,7 @@ async def _async_main(
             if event is None:
                 break
             try:
-                await handle_event(event, messenger)
+                await handle_event(messenger, event)
             except Exception:
                 logger.exception("Ошибка обработки VK-события (%s)", event.kind)
     finally:
