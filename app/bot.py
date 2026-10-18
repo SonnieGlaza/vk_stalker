@@ -146,9 +146,10 @@ async def _sortie_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
 
 
 def _pda_keyboard(*, is_leader: bool = False):
-    """Клавиатура раздела КПК — как pda_keyboard в ТГ (reply-кнопки, без лимита 6 строк)."""
+    """Клавиатура раздела КПК: как pda_keyboard в ТГ, но первой кнопкой «📟 КПК»
+    (просьба владельца), дальше «🧾 Профиль» и «💬 Чаты»."""
     rows: list[list[str]] = [
-        ["🧾 Профиль", "💬 Чаты"],
+        ["📟 КПК", "🧾 Профиль", "💬 Чаты"],
         ["🏆 Рейтинг", "🗺 Карта", "📍 Локация"],
         ["👥 Игроки", "🤝 Обмен"],
         ["💎 Находки", "💎 Арты"],
@@ -4214,7 +4215,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.30"
+APP_VERSION = "1.0.31"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
