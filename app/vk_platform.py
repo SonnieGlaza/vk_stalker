@@ -669,15 +669,32 @@ async def _async_main(
     worker_thread = threading.Thread(target=_poll_worker, args=(settings, queue, stop), daemon=True)
     worker_thread.start()
     tasks = [asyncio.create_task(fn(messenger)) for fn in background]
+    # События одного игрока — строго по порядку (иначе ломается игровое состояние),
+    # но игроки и фоновая рассылка (_zone_tick) не блокируют друг друга: раньше все
+    # события шли по очереди в одном цикле, и ответ ждал, пока тик разошлёт сообщения
+    # всем игрокам (до минуты).
+    per_user_locks: dict[int, asyncio.Lock] = {}
+
+    def _lock_for(user_id: int) -> asyncio.Lock:
+        lock = per_user_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            per_user_locks[user_id] = lock
+        return lock
+
+    async def _handle_one(event: VkEvent) -> None:
+        try:
+            async with _lock_for(int(event.user_id or 0)):
+                await handle_event(messenger, event)
+        except Exception:
+            logger.exception("Ошибка обработки VK-события (%s)", event.kind)
+
     try:
         while True:
             event = await queue.get()
             if event is None:
                 break
-            try:
-                await handle_event(messenger, event)
-            except Exception:
-                logger.exception("Ошибка обработки VK-события (%s)", event.kind)
+            asyncio.create_task(_handle_one(event))
     finally:
         stop.set()
         for task in tasks:
