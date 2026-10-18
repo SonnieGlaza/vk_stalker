@@ -507,6 +507,70 @@ def test_players_unknown_payload_safe(env):
     _run(_click_cbs(st, m, ["players:f:НетТаких:999", "players:root"]))
 
 
+def test_pg_pool_reuses_and_limits(monkeypatch):
+    """Пул Postgres: переиспользует живые соединения, держит лимит, выбрасывает закрытые."""
+    import app.db as db
+
+    class FakeRaw:
+        def __init__(self, n: int):
+            self.n = n
+            self.closed = False
+
+        def cursor(self):
+            return SimpleNamespace(execute=lambda *a, **k: None)
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    made: list[int] = []
+
+    def fake_connect(url: str):
+        made.append(1)
+        return FakeRaw(len(made))
+
+    monkeypatch.setattr(db, "_pg_connect_raw", fake_connect)
+    url = "postgresql://fake"
+    db._PG_POOL.clear()
+    try:
+        c1 = db._pg_pool_get(url)
+        c2 = db._pg_pool_get(url)
+        assert len(made) == 2
+        db._pg_pool_put(url, c2)
+        db._pg_pool_put(url, c1)
+        c3 = db._pg_pool_get(url)
+        assert c3 is c1, "пул не переиспользовал живое соединение"
+        assert len(made) == 2, "при переиспользовании не должно быть новых connect"
+        # DbConnection с pool_key после контекста возвращает соединение в пул.
+        db._PG_POOL.clear()
+        db._pg_pool_put(url, fake_connect(url))
+        raw = db._pg_pool_get(url)
+        conn = db.DbConnection(raw, "postgres", pool_key=url)
+        with conn:
+            pass
+        stack = db._PG_POOL[url]
+        assert len(stack) == 1 and stack[0][0] is raw, "соединение не вернулось в пул"
+        # Лимит: лишние закрываются.
+        db._PG_POOL.clear()
+        for i in range(db._PG_POOL_MAX + 3):
+            db._pg_pool_put(url, FakeRaw(i))
+        assert len(db._PG_POOL[url]) == db._PG_POOL_MAX
+        # Закрытое соединение из пула не отдаётся.
+        db._PG_POOL.clear()
+        dead = FakeRaw(1)
+        dead.close()
+        db._pg_pool_put(url, dead)
+        fresh = db._pg_pool_get(url)
+        assert fresh is not dead
+    finally:
+        db._PG_POOL.clear()
+
+
 def test_profile_text_format(env):
     """Профиль: ник с медалями, ID STK-, фракция, звание (как в примере)."""
     st, m = env

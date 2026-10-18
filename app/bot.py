@@ -164,12 +164,14 @@ def _pda_keyboard(*, is_leader: bool = False):
     return reply_keyboard(*[tuple(r) for r in rows])
 
 
-def _pda_keyboard_for(storage: Storage, user_id: int):
-    player = storage.get_character(int(user_id), refresh_energy=False)
+def _pda_keyboard_for(storage: Storage, user_id: int, player: Any | None = None):
+    if player is None:
+        player = storage.get_character(int(user_id), refresh_energy=False)
+    faction = getattr(player, "faction", None) if player is not None else None
     is_leader = bool(
         player is not None
-        and player.faction
-        and storage.get_faction_leader_id(player.faction) == int(user_id)
+        and faction
+        and storage.get_faction_leader_id(faction) == int(user_id)
     )
     return _pda_keyboard(is_leader=is_leader)
 
@@ -205,7 +207,14 @@ async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
         from app.profile_card import build_character_card
 
         rating = int((storage.get_player_stats(int(event.user_id)) or {}).get("rating_points", 0))
-        card_png = build_character_card(player, rating_points=rating, storage=storage)
+        # Рендер карточки — тяжёлый (Pillow, шрифты): в поток, чтобы не блокировать
+        # ответы другим игрокам (пул БД thread-safe, storage в нём можно звать из потока).
+        card_png = await asyncio.to_thread(
+            build_character_card,
+            player,
+            rating_points=rating,
+            storage=storage,
+        )
         await bot.send_photo(
             event.peer_id,
             card_png,
@@ -227,7 +236,7 @@ async def _pda_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     await bot.send_message(
         event.peer_id,
         "📟 КПК сталкера\nПрофиль, связь, рейтинг, карта, журналы, артефакты, игроки и рефералка.",
-        reply_markup=_pda_keyboard_for(storage, int(event.user_id)),
+        reply_markup=_pda_keyboard_for(storage, int(event.user_id), player=player),
     )
 
 
@@ -4205,7 +4214,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.25"
+APP_VERSION = "1.0.26"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}

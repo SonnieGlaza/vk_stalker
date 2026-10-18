@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -49,10 +51,71 @@ class DbConfig:
 
 def normalize_database_url(raw: str) -> str:
     url = raw.strip()
-    # Railway / Heroku sometimes give postgres:// which psycopg rejects.
+    # Railway / Heroku отдают postgres:// который psycopg отвергает.
     if url.startswith("postgres://"):
         url = "postgresql://" + url[len("postgres://") :]
     return url
+
+
+# ---------------------------------------------------------------------------
+# Пул постоянных подключений Postgres
+# ---------------------------------------------------------------------------
+# Каждый psycopg.connect — это TCP+TLS+авторизация (~0.2-1 сек на Railway),
+# а storage делает десятки подключений на команду. Держим живые соединения
+# и переиспользуем их; после долгого простоя проверяем лёгким SELECT 1.
+_PG_POOL: dict[str, list[tuple[Any, float]]] = {}
+_PG_POOL_LOCK = threading.Lock()
+_PG_POOL_MAX = 8
+_PG_POOL_IDLE_PING_SEC = 60.0
+
+
+def _pg_connect_raw(database_url: str) -> Any:
+    import psycopg
+    from psycopg.rows import dict_row
+
+    return psycopg.connect(
+        database_url,
+        row_factory=dict_row,
+        connect_timeout=8,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=3,
+    )
+
+
+def _pg_pool_get(database_url: str) -> Any:
+    with _PG_POOL_LOCK:
+        stack = _PG_POOL.setdefault(database_url, [])
+        now = time.monotonic()
+        while stack:
+            raw, last_used = stack.pop()
+            if raw.closed:
+                continue
+            if now - last_used > _PG_POOL_IDLE_PING_SEC:
+                # Долго лежал в пуле: хостинг (или прокси Railway) мог закрыть.
+                try:
+                    raw.cursor().execute("SELECT 1")
+                except Exception:
+                    try:
+                        raw.close()
+                    except Exception:
+                        pass
+                    continue
+            return raw
+        return _pg_connect_raw(database_url)
+
+
+def _pg_pool_put(database_url: str, raw: Any) -> None:
+    with _PG_POOL_LOCK:
+        stack = _PG_POOL.setdefault(database_url, [])
+        if len(stack) >= _PG_POOL_MAX or raw.closed:
+            try:
+                raw.close()
+            except Exception:
+                pass
+            return
+        stack.append((raw, time.monotonic()))
 
 
 def is_dml(sql: str) -> bool:
@@ -131,9 +194,11 @@ class DbCursor:
 
 
 class DbConnection:
-    def __init__(self, raw_conn: Any, backend: str) -> None:
+    def __init__(self, raw_conn: Any, backend: str, pool_key: str | None = None) -> None:
         self._conn = raw_conn
         self.backend = backend
+        self._pool_key = pool_key
+        self._dead = False
         self.total_changes = 0
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> DbCursor:
@@ -183,20 +248,34 @@ class DbConnection:
         self._conn.rollback()
 
     def close(self) -> None:
-        self._conn.close()
+        self._dead = True
+        try:
+            self._conn.close()
+        except Exception:
+            pass
 
     def __enter__(self) -> "DbConnection":
         self.total_changes = 0
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
+        dead = self._dead
         try:
             if exc_type is None:
                 self._conn.commit()
             else:
                 self._conn.rollback()
+        except Exception:
+            # Если даже commit/rollback упал (соединение умерло) — в пул не возвращаем.
+            dead = True
         finally:
-            self._conn.close()
+            if self._pool_key and not dead and not self._conn.closed:
+                _pg_pool_put(self._pool_key, self._conn)
+            else:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
         return None
 
 
@@ -204,21 +283,8 @@ def connect(config: DbConfig) -> DbConnection:
     if config.backend == "postgres":
         if not config.database_url:
             raise ValueError("DATABASE_URL is empty")
-        import psycopg
-        from psycopg.rows import dict_row
-
-        # Короткий таймаут подключения и keepalive: если хостинговая БД временно
-        # недоступна, не висим и быстрее возвращаем ошибку (фоновые тики не застревают).
-        raw = psycopg.connect(
-            config.database_url,
-            row_factory=dict_row,
-            connect_timeout=8,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=3,
-        )
-        return DbConnection(raw, "postgres")
+        raw = _pg_pool_get(config.database_url)
+        return DbConnection(raw, "postgres", pool_key=config.database_url)
 
     if not config.sqlite_path:
         raise ValueError("DB_PATH is empty")
