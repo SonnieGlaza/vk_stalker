@@ -752,7 +752,11 @@ def run_webhook(
                     "Код от VK впиши в .env и перезапусти бота."
                 )
                 return web.Response(text="ok")
-            logger.info("Callback: confirmation OK (группа %s), отвечаю кодом.", data.get("group_id"))
+            logger.info(
+                "Callback: confirmation OK (группа %s, код совпадает=%s), отвечаю кодом.",
+                data.get("group_id"),
+                code == str(data.get("key") or ""),
+            )
             return web.Response(text=code, content_type="text/plain")
         if settings.callback_secret and str(data.get("secret") or "") != settings.callback_secret:
             logger.warning("Callback: неверный secret (тип %s)", typ)
@@ -791,6 +795,7 @@ def run_webhook(
         return web.Response(text=f"vk_stalker {APP_VERSION}")
 
     app.router.add_get("/", _ping)
+    app.router.add_get("/callback", _ping)
     app.router.add_get("/version", _version)
 
     async def _run() -> None:
@@ -807,6 +812,10 @@ def run_webhook(
                 ) from exc
             raise
         logger.info("VK Callback webhook запущен на 0.0.0.0:%s", settings.webhook_port)
+        logger.info(
+            "VK_CONFIRMATION_CODE задан: %s (адрес в настройках VK: https://<домен>/callback)",
+            "да" if (settings.confirmation_code or "").strip() else "НЕТ — подтверждение Callback API не пройдёт",
+        )
         tasks = [asyncio.create_task(fn(messenger)) for fn in background]
         try:
             while True:

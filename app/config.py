@@ -156,8 +156,10 @@ def load_settings() -> Settings:
     admin_ids = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
     market_url = os.getenv("VK_MARKET_URL", "").strip()
     use_callback = os.getenv("VK_USE_CALLBACK", "").strip().lower() in ("1", "true", "yes")
+    # Railway задаёт PORT (стандарт платформы) — если он есть, слушаем его,
+    # иначе явный VK_WEBHOOK_PORT, иначе 8080.
     try:
-        webhook_port = int(os.getenv("VK_WEBHOOK_PORT", "8080").strip() or "8080")
+        webhook_port = int((os.getenv("PORT") or os.getenv("VK_WEBHOOK_PORT") or "8080").strip() or "8080")
     except ValueError:
         webhook_port = 8080
     confirmation_code = os.getenv("VK_CONFIRMATION_CODE", "").strip()
