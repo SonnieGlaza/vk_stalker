@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
+
+
+logger = logging.getLogger(__name__)
 
 
 PLACEHOLDER_RE = re.compile(r"\?")
@@ -169,17 +173,25 @@ class DbCursor:
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> "DbCursor":
         statement = rewrite_sql_for_postgres(sql) if self._backend == "postgres" else sql
+        _t0 = time.monotonic()
         if params is None:
             self._cursor.execute(statement)
         else:
             self._cursor.execute(statement, tuple(params))
+        _dt = time.monotonic() - _t0
+        if _dt >= 2.0:
+            logger.warning("МЕДЛЕННЫЙ SQL (%.2f с): %s", _dt, statement[:120])
         self.lastrowid = getattr(self._cursor, "lastrowid", None)
         self.rowcount = getattr(self._cursor, "rowcount", -1)
         return self
 
     def executemany(self, sql: str, seq_of_params: Iterable[Sequence[Any]]) -> "DbCursor":
         statement = rewrite_sql_for_postgres(sql) if self._backend == "postgres" else sql
+        _t0 = time.monotonic()
         self._cursor.executemany(statement, list(seq_of_params))
+        _dt = time.monotonic() - _t0
+        if _dt >= 2.0:
+            logger.warning("МЕДЛЕННЫЙ SQL (%.2f с, executemany): %s", _dt, statement[:120])
         self.rowcount = getattr(self._cursor, "rowcount", -1)
         return self
 

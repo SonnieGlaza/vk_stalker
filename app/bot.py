@@ -56,15 +56,28 @@ def _storage_reset() -> None:
 
 
 def _probe_db() -> None:
-    """Живая проверка БД при старте: если хостинг-БД недоступна (Railway Postgres упал/
-    перезапустился), видно сразу в логе — команды игроков будут молча падать (вебхук отвечает
-    200, но обработчик кидает исключение и юзер не получает ответа)."""
+    """Живая проверка БД при старте + замер пинга (сколько стоит одна поездка в БД)."""
     try:
         st = get_storage()
         st.get_meta("__startup_probe__")
-        logger.info("Подключение к БД: OK (backend=%s)", getattr(st, "backend", "?"))
+        pings: list[float] = []
+        with st._connect() as conn:
+            for _ in range(5):
+                t0 = time.monotonic()
+                conn.execute("SELECT 1").fetchone()
+                pings.append((time.monotonic() - t0) * 1000.0)
+        pings_sorted = sorted(pings)
+        median = pings_sorted[len(pings_sorted) // 2]
+        logger.info(
+            "ПОДКЛЮЧЕНИЕ К БД: OK (backend=%s); пинг БД: средн. %.0f мс, медиана %.0f мс, макс %.0f мс "
+            "(если медиана > 100 мс — БД в другом регионе, чем приложение)",
+            getattr(st, "backend", "?"),
+            sum(pings) / len(pings),
+            median,
+            max(pings),
+        )
     except Exception:
-        logger.exception("Подключение к БД: ОШИБКА — на сообщения не будет ответов, пока БД недоступна")
+        logger.exception("ПОДКЛЮЧЕНИЕ К БД: ОШИБКА — на сообщения не будет ответов, пока БД недоступна")
 
 
 # ---------------------------------------------------------------------------
@@ -4230,7 +4243,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.33"
+APP_VERSION = "1.0.34"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
