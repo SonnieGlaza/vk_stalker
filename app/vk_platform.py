@@ -788,8 +788,26 @@ def run_webhook(
         if settings.callback_secret and str(data.get("secret") or "") != settings.callback_secret:
             logger.warning("Callback: неверный secret (тип %s)", typ)
             return web.Response(status=403, text="forbidden")
-        logger.debug("Callback: событие %s (группа %s)", typ, data.get("group_id"))
         obj = data.get("object") or {}
+        if typ in ("message_new", "message_event") and isinstance(obj, dict):
+            try:
+                if typ == "message_new":
+                    msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+                    logger.info(
+                        "Callback: message_new от %s: %r",
+                        msg.get("from_id"),
+                        str(msg.get("text") or "")[:30],
+                    )
+                else:
+                    logger.info(
+                        "Callback: message_event от %s: payload=%r",
+                        obj.get("user_id"),
+                        parse_callback_payload(obj.get("payload")),
+                    )
+            except Exception:
+                pass
+        else:
+            logger.info("Callback: событие %s (группа %s)", typ, data.get("group_id"))
         if typ in ("message_new", "message_event"):
             vk_event = _convert_callback_event(typ, obj)
             if vk_event is not None:
