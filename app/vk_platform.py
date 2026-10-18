@@ -21,6 +21,7 @@ import html
 import io
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -816,6 +817,19 @@ def run_webhook(
             "VK_CONFIRMATION_CODE задан: %s (адрес в настройках VK: https://<домен>/callback)",
             "да" if (settings.confirmation_code or "").strip() else "НЕТ — подтверждение Callback API не пройдёт",
         )
+        public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().lstrip("https://").rstrip("/")
+        if public_domain:
+            logger.info(
+                "Публичный адрес Railway: https://%s/callback — ровно этот адрес впиши "
+                "в «Адрес» Callback API в VK (Настройки сообщества → Работа с API).",
+                public_domain,
+            )
+        else:
+            logger.info(
+                "RAILWAY_PUBLIC_DOMAIN не задан: у сервиса нет публичного домена — "
+                "сгенерируй его (Settings → Networking → Public Networking) и впиши "
+                "в «Адрес» Callback API в VK; браузер по этому адресу должен показывать «ok»."
+            )
         tasks = [asyncio.create_task(fn(messenger)) for fn in background]
         try:
             while True:
