@@ -29,16 +29,38 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Sequence
 
+import httpx
 import vk_api
+from requests import Session
 from vk_api.bot_longpoll import VkBotLongPoll, VkBotEventType
 from vk_api.keyboard import VkKeyboard, VkKeyboardColor
-from vk_api.upload import VkUpload
 
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LEN = 4096
+HTTP_TIMEOUT_SECONDS = 5.0
+CALLBACK_QUEUE_SIZE = 1000
+CALLBACK_WORKERS = 4
+
+
+class _TimeoutSession(Session):
+    """requests-сессия vk_api с безусловным HTTP timeout не больше пяти секунд."""
+
+    def request(self, method: str, url: str, **kwargs: Any):
+        timeout = kwargs.get("timeout")
+        if timeout is None:
+            kwargs["timeout"] = HTTP_TIMEOUT_SECONDS
+        elif isinstance(timeout, tuple):
+            kwargs["timeout"] = tuple(
+                HTTP_TIMEOUT_SECONDS if value is None else min(float(value), HTTP_TIMEOUT_SECONDS)
+                for value in timeout
+            )
+        else:
+            kwargs["timeout"] = min(float(timeout), HTTP_TIMEOUT_SECONDS)
+        return super().request(method, url, **kwargs)
+
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -283,7 +305,9 @@ class VkMessenger:
                 "Настоящий ключ доступа сообщества начинается с vk1.a.… Получи его в "
                 "Настройки → Работа с API → Ключи доступа."
             )
-        self.vk = vk_api.VkApi(token=self.token, api_version="5.131")
+        session = _TimeoutSession()
+        session.headers["User-agent"] = "vk_stalker/1.0"
+        self.vk = vk_api.VkApi(token=self.token, api_version="5.131", session=session)
         # НЕ вызываем auth(): в vk_api 11+ auth(token_only=True) требует login и падает
         # LoginRequired даже с валидным токеном. Токен уже передан в конструктор;
         # вместо этого проверяем токен живым запросом.
@@ -295,7 +319,6 @@ class VkMessenger:
                 "Проверь, что VK_TOKEN — действующий ключ доступа сообщества (vk1.a.…)\n"
                 "с правами: сообщения, управление сообществом, Long Poll API, Callback, фото, документы."
             ) from exc
-        self._uploader = VkUpload(self.vk)
 
 
 
@@ -377,7 +400,12 @@ class VkMessenger:
             logger.warning("send_photo: пустые данные фото (peer %s)", chat_id)
             return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
 
-        attachment = self._upload_photo_attachment(data, int(chat_id))
+        # Только одна попытка загрузить как фото. Если не вышло — один запасной путь
+        # загрузки документом, затем текст без картинки; циклов повторных попыток нет.
+        attachment = await self._upload_photo_attachment(data, int(chat_id))
+        if attachment:
+            return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
+        attachment = await self._upload_photo_document(data, int(chat_id))
         if attachment:
             return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
         return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
@@ -390,107 +418,68 @@ class VkMessenger:
             return None
         return await self.send_message(int(chat_id), text, reply_markup=reply_markup)
 
-    def _upload_photo_attachment(self, data: bytes, peer_id: int) -> str | None:
-        """Каскад загрузки картинки в сообщение; возвращает attachment (photo…/doc…) или None."""
-        # 1) штатный путь vk_api (upload.php)
-        attachment = self._upload_photo_messages(data, peer_id)
-        if attachment:
-            return attachment
-        # 2) пережатие в понятный VK JPEG и повтор
-        normalized = _normalize_photo(data)
-        if normalized is not None and normalized != data:
-            attachment = self._upload_photo_messages(normalized, peer_id)
-            if attachment:
-                return attachment
-        # 3) гарантированный запасной путь — изображение-документ (показывается превью)
-        attachment = self._upload_photo_document(data, peer_id)
-        if attachment:
-            logger.warning(
-                "photo upload: photo-пути не сработали, картинка уйдёт документом-файлом "
-                "(peer %s) — см. предупреждения выше",
-                peer_id,
-            )
-            return attachment
-        return None
-
-    def _upload_photo_messages(self, data: bytes, peer_id: int) -> str | None:
-        """Ручная загрузка фото в сообщение: VK менял протокол — старый upload.php принимает
-        поле `photo`, новый v2/bulk_upload — только `file1` (а vk_api 11.x шлёт `file0` и
-        молча роняет photo_messages, из-за чего фото уходило документом-файлом).
-        Пробуем все имена полей и сохраняем через photos.saveMessagesPhoto."""
+    async def _upload_photo_attachment(self, data: bytes, peer_id: int) -> str | None:
+        """Одна асинхронная попытка загрузки фото через httpx, без VkUpload."""
         try:
-            server = self.vk.method("photos.getMessagesUploadServer", {"peer_id": int(peer_id)})
-        except Exception as exc:
-            logger.warning(
-                "photos.getMessagesUploadServer failed (peer %s): %s — проверь, что в токене "
-                "сообщества выданы права «фотографии»",
-                peer_id, exc,
+            server = await asyncio.to_thread(
+                self.vk.method, "photos.getMessagesUploadServer", {"peer_id": int(peer_id)}
             )
-            return None
-        upload_url = str((server or {}).get("upload_url") or "")
-        if not upload_url:
-            logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
-            return None
-        last_exc: Exception | None = None
-        last_detail = ""
-        for field in ("photo", "file1", "file0"):
-            try:
-                logger.info("photo upload: попытка поле=%s на %s...", field, upload_url[:70])
-                files = {field: ("photo.jpg", io.BytesIO(data), "image/jpeg")}
-                # Жёсткий таймаут: мёртвый upload-сервер не должен висеть минуту.
-                resp = self.vk.http.post(upload_url, files=files, timeout=(5, 10))
-                try:
-                    payload = resp.json() if hasattr(resp, "json") else resp
-                except Exception:
-                    payload = None
-                if not isinstance(payload, dict):
-                    last_detail = f"ответ не JSON (HTTP {getattr(resp, 'status_code', '?')})"
-                    continue
-                photo = payload.get("photo")
-                if not photo:
-                    # Новый протокол (bulk_upload) возвращает files/sha/secret без photo —
-                    # сохранить такой ответ нельзя; пробуем следующее имя поля.
-                    last_detail = f"в ответе нет photo: {str(payload)[:120]}"
-                    continue
-                saved = self.vk.method(
-                    "photos.saveMessagesPhoto",
-                    {"server": payload.get("server"), "photo": photo, "hash": payload.get("hash")},
+            upload_url = str((server or {}).get("upload_url") or "")
+            if not upload_url:
+                logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
+                return None
+            async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT_SECONDS)) as client:
+                response = await asyncio.wait_for(
+                    client.post(
+                        upload_url,
+                        files={"photo": ("photo.jpg", data, "image/jpeg")},
+                    ),
+                    timeout=HTTP_TIMEOUT_SECONDS,
                 )
-                att = self._photo_attachment(saved, peer_id)
-                if att:
-                    logger.info(
-                        "photo upload OK (peer %s, поле %s, upload_url=%s...)",
-                        peer_id, field, upload_url[:44],
-                    )
-                    return att
-                last_detail = "saveMessagesPhoto вернул не-attachment"
-            except Exception as exc:
-                last_exc = exc
-                logger.debug("photo upload (поле %s) failed (peer %s): %s", field, peer_id, exc)
-        reason = last_detail or "нет данных"
-        if last_exc is not None:
-            reason = f"{last_exc}; {reason}"
-        logger.warning(
-            "photo upload failed (peer %s, upload_url=%s...): %s",
-            peer_id, upload_url[:60], reason,
-        )
-        return None
+                response.raise_for_status()
+                payload = response.json()
+            photo = payload.get("photo") if isinstance(payload, dict) else None
+            if not photo:
+                logger.warning("photo upload: VK не вернул photo (peer %s)", peer_id)
+                return None
+            saved = await asyncio.to_thread(
+                self.vk.method,
+                "photos.saveMessagesPhoto",
+                {"server": payload.get("server"), "photo": photo, "hash": payload.get("hash")},
+            )
+            attachment = self._photo_attachment(saved, peer_id)
+            if not attachment:
+                logger.warning("photos.saveMessagesPhoto вернул пустой результат (peer %s)", peer_id)
+            return attachment
+        except Exception as exc:
+            logger.warning("photo upload failed (peer %s): %s", peer_id, exc)
+            return None
 
-    def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
-        """Картинка как документ с превью: docs.getMessagesUploadServer + docs.save."""
+    async def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
+        """Резервная одна загрузка изображения как документа через httpx."""
         try:
-            server = self.vk.method("docs.getMessagesUploadServer", {"type": "doc", "peer_id": int(peer_id)})
-            upload_url = server.get("upload_url")
+            server = await asyncio.to_thread(
+                self.vk.method,
+                "docs.getMessagesUploadServer",
+                {"type": "doc", "peer_id": int(peer_id)},
+            )
+            upload_url = str((server or {}).get("upload_url") or "")
             if not upload_url:
                 return None
-            files = {"file": ("photo.jpg", io.BytesIO(data), "image/jpeg")}
-            resp = self.vk.http.post(upload_url, files=files, timeout=(5, 10))
-            payload = resp.json()
-            file_token = str(payload.get("file") or "")
+            async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT_SECONDS)) as client:
+                response = await asyncio.wait_for(
+                    client.post(
+                        upload_url,
+                        files={"file": ("photo.jpg", data, "image/jpeg")},
+                    ),
+                    timeout=HTTP_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            file_token = str((payload or {}).get("file") or "")
             if not file_token:
-                logger.warning("docs upload: пустой file (peer %s): %s", peer_id, payload)
                 return None
-            saved = self.vk.method("docs.save", {"file": file_token})
+            saved = await asyncio.to_thread(self.vk.method, "docs.save", {"file": file_token})
             doc = None
             if isinstance(saved, dict):
                 doc = saved.get("doc") or {}
@@ -502,13 +491,13 @@ class VkMessenger:
             doc_id = int(doc.get("id") or 0)
             if not owner_id or not doc_id:
                 return None
-            att = f"doc{owner_id}_{doc_id}"
+            attachment = f"doc{owner_id}_{doc_id}"
             access_key = str(doc.get("access_key") or "")
             if access_key:
-                att += f"_{access_key}"
-            return att
+                attachment += f"_{access_key}"
+            return attachment
         except Exception as exc:
-            logger.warning("docs upload failed (peer %s): %s", peer_id, exc)
+            logger.warning("document upload failed (peer %s): %s", peer_id, exc)
             return None
 
     def _photo_attachment(self, resp: Any, chat_id: int) -> str | None:
@@ -642,7 +631,11 @@ def _convert_event(event: Any) -> VkEvent | None:
 def _poll_worker(settings: Settings, queue: "asyncio.Queue[VkEvent]", stop: "threading.Event") -> None:
     """Слушает Long Poll в отдельном потоке и кладёт события в asyncio.Queue."""
     try:
-        vk = vk_api.VkApi(token=settings.vk_token, api_version="5.131")
+        vk = vk_api.VkApi(
+            token=settings.vk_token,
+            api_version="5.131",
+            session=_TimeoutSession(),
+        )
         # auth() не вызываем (см. VkMessenger.__init__): токен уже в конструкторе.
         try:
             lp = VkBotLongPoll(vk, group_id=settings.group_id, wait=5)
@@ -772,73 +765,86 @@ def run_webhook(
 
     messenger = VkMessenger(settings)
 
+    callback_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=CALLBACK_QUEUE_SIZE)
+    callback_user_locks: dict[int, threading.Lock] = {}
+
+    async def _process_callback_event(typ: str, obj: dict[str, Any]) -> None:
+        """Полная обработка Callback вне HTTP-запроса и в пуле рабочих потоков."""
+        if typ in ("message_new", "message_event"):
+            event = _convert_callback_event(typ, obj)
+            if event is None:
+                return
+            if typ == "message_new":
+                msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+                logger.info("Callback: message_new от %s: %r", msg.get("from_id"), str(msg.get("text") or "")[:30])
+            else:
+                logger.info("Callback: message_event от %s: payload=%r", obj.get("user_id"), parse_callback_payload(obj.get("payload")))
+
+            lock = callback_user_locks.setdefault(int(event.user_id), threading.Lock())
+
+            def _run_event() -> None:
+                with lock:
+                    asyncio.run(handle_event(messenger, event))
+
+            await asyncio.to_thread(_run_event)
+            return
+
+        if typ == "market_order_new":
+            def _run_market_order() -> None:
+                from app.bot import get_storage, handle_market_order
+
+                result = asyncio.run(handle_market_order(messenger, get_storage(), obj))
+                if result:
+                    logger.info("market_order auto-confirmed: %s", result[:80])
+
+            await asyncio.to_thread(_run_market_order)
+
+    async def _callback_worker() -> None:
+        while True:
+            typ, obj = await callback_queue.get()
+            try:
+                # Каждое событие выполняется отдельной asyncio-задачей, но worker ожидает
+                # завершения, чтобы ограничить число параллельных обработчиков.
+                task = asyncio.create_task(_process_callback_event(typ, obj))
+                await task
+            except Exception:
+                logger.exception("Callback event handling failed (%s)", typ)
+            finally:
+                callback_queue.task_done()
+
     async def _on_callback(request: web.Request) -> web.Response:
+        """Только проверяет конверт события, ставит его в очередь и быстро отвечает."""
         from app.bot import APP_VERSION
 
-        _ok = "ok " + APP_VERSION  # версия видна прямо в access-логе Railway
-        path = request.path
+        ok = "ok " + APP_VERSION
         try:
             data = await request.json()
         except Exception:
-            logger.debug("callback: не-JSON POST на %s", path)
-            return web.Response(text=_ok)
+            return web.Response(text=ok)
         if not isinstance(data, dict):
-            return web.Response(text=_ok)
+            return web.Response(text=ok)
+
         typ = str(data.get("type") or "")
         if typ == "confirmation":
             code = (settings.confirmation_code or "").strip()
             if not code:
-                logger.error(
-                    "Callback подтверждение получено, но VK_CONFIRMATION_CODE не задан! "
-                    "Код от VK впиши в .env и перезапусти бота."
-                )
+                logger.error("Callback confirmation получен, но VK_CONFIRMATION_CODE не задан")
                 return web.Response(text="ok")
-            logger.info(
-                "Callback: confirmation OK (группа %s, код совпадает=%s), отвечаю кодом.",
-                data.get("group_id"),
-                code == str(data.get("key") or ""),
-            )
             return web.Response(text=code, content_type="text/plain")
-        if settings.callback_secret and str(data.get("secret") or "") != settings.callback_secret:
-            logger.warning("Callback: неверный secret (тип %s)", typ)
-            return web.Response(status=403, text="forbidden")
-        obj = data.get("object") or {}
-        if typ in ("message_new", "message_event") and isinstance(obj, dict):
-            try:
-                if typ == "message_new":
-                    msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
-                    logger.info(
-                        "Callback: message_new от %s: %r",
-                        msg.get("from_id"),
-                        str(msg.get("text") or "")[:30],
-                    )
-                else:
-                    logger.info(
-                        "Callback: message_event от %s: payload=%r",
-                        obj.get("user_id"),
-                        parse_callback_payload(obj.get("payload")),
-                    )
-            except Exception:
-                pass
-        else:
-            logger.info("Callback: событие %s (группа %s)", typ, data.get("group_id"))
-        if typ in ("message_new", "message_event"):
-            vk_event = _convert_callback_event(typ, obj)
-            if vk_event is not None:
-                try:
-                    await handle_event(messenger, vk_event)
-                except Exception:
-                    logger.exception("Callback event handling failed (%s)", typ)
-        elif typ == "market_order_new" and isinstance(obj, dict):
-            try:
-                from app.bot import get_storage, handle_market_order
 
-                result = await handle_market_order(messenger, get_storage(), obj)
-                if result:
-                    logger.info("market_order auto-confirmed: %s", result[:80])
-            except Exception:
-                logger.exception("market_order_new handling failed")
-        return web.Response(text=_ok)
+        if settings.callback_secret and str(data.get("secret") or "") != settings.callback_secret:
+            return web.Response(status=403, text="forbidden")
+
+        if typ in ("message_new", "message_event", "market_order_new"):
+            obj = data.get("object")
+            if not isinstance(obj, dict):
+                return web.Response(text=ok)
+            try:
+                callback_queue.put_nowait((typ, obj))
+            except asyncio.QueueFull:
+                logger.error("Callback queue is full; VK event was not acknowledged (%s)", typ)
+                return web.Response(status=503, text="busy")
+        return web.Response(text=ok)
 
     app = web.Application()
     app.router.add_post("/callback", _on_callback)
@@ -860,6 +866,7 @@ def run_webhook(
         return web.Response(text=f"vk_stalker {APP_VERSION}")
 
     app.router.add_get("/", _ping)
+    app.router.add_get("/ping", _ping)
     app.router.add_get("/callback", _callback_ping)
     app.router.add_get("/version", _version)
 
@@ -894,7 +901,13 @@ def run_webhook(
                 "сгенерируй его (Settings → Networking → Public Networking) и впиши "
                 "в «Адрес» Callback API в VK; браузер по этому адресу должен показывать «ok»."
             )
-        tasks = [asyncio.create_task(fn(messenger)) for fn in background]
+        async def _run_background(fn: Callable[[VkMessenger], Awaitable[None]]) -> None:
+            # Фоновые рассылки могут вызывать синхронный VK SDK. Не даём им блокировать
+            # aiohttp-loop, который должен быстро подтверждать Callback-события.
+            await asyncio.to_thread(lambda: asyncio.run(fn(messenger)))
+
+        tasks = [asyncio.create_task(_run_background(fn)) for fn in background]
+        tasks.extend(asyncio.create_task(_callback_worker()) for _ in range(CALLBACK_WORKERS))
         try:
             while True:
                 await asyncio.sleep(3600)
