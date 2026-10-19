@@ -43,6 +43,7 @@ MAX_MESSAGE_LEN = 4096
 HTTP_TIMEOUT_SECONDS = 5.0
 CALLBACK_QUEUE_SIZE = 1000
 CALLBACK_WORKERS = 4
+EVENT_HANDLING_TIMEOUT_SECONDS = 120.0
 
 
 class _TimeoutSession(Session):
@@ -773,18 +774,26 @@ def run_webhook(
         if typ in ("message_new", "message_event"):
             event = _convert_callback_event(typ, obj)
             if event is None:
+                logger.warning("Callback: %s не сконвертирован (obj=%r)", typ, str(obj)[:200])
                 return
-            if typ == "message_new":
-                msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
-                logger.info("Callback: message_new от %s: %r", msg.get("from_id"), str(msg.get("text") or "")[:30])
-            else:
-                logger.info("Callback: message_event от %s: payload=%r", obj.get("user_id"), parse_callback_payload(obj.get("payload")))
-
             lock = callback_user_locks.setdefault(int(event.user_id), threading.Lock())
 
             def _run_event() -> None:
                 with lock:
-                    asyncio.run(handle_event(messenger, event))
+                    try:
+                        asyncio.run(
+                            asyncio.wait_for(
+                                handle_event(messenger, event),
+                                EVENT_HANDLING_TIMEOUT_SECONDS,
+                            )
+                        )
+                    except TimeoutError:
+                        logger.error(
+                            "Callback: событие %s не обработалось за %.0f с (user=%s) — рабочий поток освобождён",
+                            typ,
+                            EVENT_HANDLING_TIMEOUT_SECONDS,
+                            event.user_id,
+                        )
 
             await asyncio.to_thread(_run_event)
             return
@@ -838,12 +847,32 @@ def run_webhook(
         if typ in ("message_new", "message_event", "market_order_new"):
             obj = data.get("object")
             if not isinstance(obj, dict):
+                logger.warning("Callback: %s без object (получено %s)", typ, str(data)[:200])
                 return web.Response(text=ok)
+            # Журнал приёма: по нему сразу видно, шлёт ли VK событие вообще, ещё до обработки.
+            if typ == "message_new":
+                msg = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+                logger.info(
+                    "Callback: пришёл message_new от %s: %r (out=%s)",
+                    msg.get("from_id"),
+                    str(msg.get("text") or "")[:40],
+                    msg.get("out"),
+                )
+            elif typ == "message_event":
+                logger.info(
+                    "Callback: пришёл message_event от %s: payload=%r",
+                    obj.get("user_id"),
+                    parse_callback_payload(obj.get("payload")),
+                )
+            else:
+                logger.info("Callback: пришёл %s от %s", typ, obj.get("user_id"))
             try:
                 callback_queue.put_nowait((typ, obj))
             except asyncio.QueueFull:
                 logger.error("Callback queue is full; VK event was not acknowledged (%s)", typ)
                 return web.Response(status=503, text="busy")
+        else:
+            logger.debug("Callback: пропущен тип %s", typ)
         return web.Response(text=ok)
 
     app = web.Application()
