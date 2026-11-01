@@ -825,7 +825,7 @@ def run_webhook(
         """Только проверяет конверт события, ставит его в очередь и быстро отвечает."""
         from app.bot import APP_VERSION
 
-        ok = "ok "
+        ok = "ok"
         try:
             data = await request.json()
         except Exception:
