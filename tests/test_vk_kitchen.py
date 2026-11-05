@@ -309,10 +309,10 @@ def test_pda_sections_respond(env):
     """Все разделы КПК отвечают (text = как в ТГ pda_keyboard)."""
     st, m = env
     labels = [
-        "📟 КПК", "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "🗺 Карта", "📍 Локация",
+        "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "📍 Локация",
         "👥 Игроки", "🤝 Обмен", "💎 Находки", "💎 Арты", "📊 Дроп", "☠️ Смерти",
         "📊 Статистика", "📅 Ежедневка", "🔔 Уведомления", "🔥 Как не сдохнуть",
-        "🏛 Клановые задачи", "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
+        "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
     ]
     _run(_click_texts(st, m, labels))
     # Инлайн-разделы тоже живы (старые сообщения).
@@ -395,29 +395,30 @@ def test_pda_players_flow(env):
 
 
 def test_kpk_keyboard_has_all_sections(env):
-    """Клавиатура КПК: первой кнопкой «📟 КПК» (по просьбе владельца, в отличие от ТГ),
-    остальные разделы как в pda_keyboard ТГ, тот же порядок."""
+    """Клавиатура КПК без дублей: нет «📟 КПК» (раздел уже открыт), «🗺 Карта»
+    живёт в «Вылазке», «🏛 Клановые задачи» — в «Группировке»."""
     import json
 
     expected = (
-        "📟 КПК", "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "🗺 Карта", "📍 Локация",
+        "🧾 Профиль", "💬 Чаты", "🏆 Рейтинг", "📍 Локация",
         "👥 Игроки", "🤝 Обмен", "💎 Находки", "💎 Арты", "📊 Дроп", "☠️ Смерти",
         "📊 Статистика", "📅 Ежедневка", "🔔 Уведомления", "🔥 Как не сдохнуть",
-        "🏛 Клановые задачи", "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
+        "ℹ️ Информация", "🔗 Реферальная система", "⬅️ В меню",
     )
     kb = json.loads(bot._pda_keyboard().get_keyboard())
     assert kb["inline"] is False, "КПК-меню должно быть reply-клавиатурой (кнопки видны всегда)"
     labels = tuple(btn["action"]["label"] for row in kb["buttons"] for btn in row)
     assert labels == expected, f"Кнопки КПК не совпадают:\nVK: {labels}\nОжидалось: {expected}"
-    # Командиру «📣 Сбор» встаёт ровно между «ℹ️ Информация» и «🔗 Реферальная система» (как в ТГ).
+    for removed in ("📟 КПК", "🗺 Карта", "🏛 Клановые задачи"):
+        assert removed not in labels, f"«{removed}» не должен дублироваться в КПК"
+    # Командиру «📣 Сбор» встаёт после «ℹ️ Информация», перед рефералкой.
     st, m = env
     st.set_faction_leader("Долг", UID)
     kb2 = json.loads(bot._pda_keyboard_for(st, UID).get_keyboard())
     labels2 = tuple(btn["action"]["label"] for row in kb2["buttons"] for btn in row)
-    pos = labels2.index("🏛 Клановые задачи")
-    assert labels2[pos + 1] == "ℹ️ Информация"
-    assert labels2[pos + 2] == "📣 Сбор"
-    assert labels2[pos + 3] == "🔗 Реферальная система"
+    pos = labels2.index("ℹ️ Информация")
+    assert labels2[pos + 1] == "📣 Сбор"
+    assert labels2[pos + 2] == "🔗 Реферальная система"
     assert labels2[-1] == "⬅️ В меню"
 
 
@@ -432,7 +433,10 @@ def test_sortie_and_rating_tg_labels(env):
     # Сорти-клавиатура — как sortie_keyboard в ТГ.
     kb = json.loads(keyboard_to_json(bot._sortie_keyboard()))
     labels = [b["action"]["label"] for row in kb["buttons"] for b in row]
-    assert labels == ["⚔️ Война", "🗺 Переход", "⚔️ Арена", "🪖 Рейды", "📍 Локация", "⬅️ В меню"], labels
+    assert labels == [
+        "⚔️ Война", "🗺 Переход", "⚔️ Арена", "🪖 Рейды",
+        "📍 Локация", "🗺 Карта Зоны", "🏠 На базу", "⬅️ В меню",
+    ], labels
     # Рейтинг — метки ratings_keyboard в ТГ + «📊 Моя статистика».
     kb = json.loads(keyboard_to_json(bot._rating_keyboard()))
     labels = [b["action"]["label"] for row in kb["buttons"] for b in row]
@@ -444,6 +448,249 @@ def test_sortie_and_rating_tg_labels(env):
     # «📊 Моя статистика» отвечает текстом статистики.
     _run(_click_cbs(st, m, ["rating:stats"]))
     assert "Статистика" in _merged(m.sent), _merged(m.sent)[:160]
+
+
+def test_warehouse_deposit_any_item(env):
+    """Склад: материалы и «прочая чушь» реально вносятся, ключ не подменяется."""
+    st, m = env
+    st.add_item(UID, "materials", 7)
+    st.add_item(UID, "bread", 3)
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("faction:wh:dep:materials"))
+        assert "Сколько" in _merged(m.sent), _merged(m.sent)[:200]
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("5"))
+        assert "Стройматериалы" in _merged(m.sent), _merged(m.sent)[:200]
+        warehouse = st.get_faction_warehouse("Долг")
+        assert warehouse.get("materials") == 5, warehouse
+        assert st.get_character(UID, refresh_energy=False).inventory.get("materials") == 2
+
+        # Любой другой предмет (не из старого белого списка) тоже сдаётся.
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("faction:wh:dep:bread"))
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("3"))
+        warehouse = st.get_faction_warehouse("Долг")
+        assert warehouse.get("bread") == 3, warehouse
+        assert warehouse.get("ammo_pack", 0) == 0, "предмет не должен превращаться в патроны"
+
+    _run(run())
+
+
+def test_contraband_destination_click_starts_run(env):
+    """Клик по точке сдачи контрабанды запускает рейс, а не переоткрывает меню."""
+    from app.game_logic import get_active_smuggling, list_smuggling_destinations
+
+    st, m = env
+    destinations = [d for d in list_smuggling_destinations(st, UID) if d != "Кордон"]
+    assert destinations, "нет доступных точек сдачи"
+    _run(_click_cbs(st, m, [f"eco:smuggle:to:{destinations[0]}"]))
+    assert get_active_smuggling(st, UID) is not None, "рейс не начался — кнопка снова открыла меню"
+
+
+def test_duel_weapon_damage_scales(env, monkeypatch):
+    """Урон оружия в дуэли зависит от ствола: броня не должна обнулять разницу."""
+    from types import SimpleNamespace
+
+    import app.duel_grid as duel
+
+    attacker = SimpleNamespace(equipment={"weapon": "Гаусс-пушка"})
+    monkeypatch.setattr(duel, "weapon_shoot_range", lambda _weapon: 4)
+    monkeypatch.setattr(duel, "weapon_damage", lambda _weapon: 50)
+    assert duel._duel_damage(attacker) == 50, "топ-оружие должно бить сильнее ПМ"
+
+    # Ближний бой по-прежнему считается от силы снаряги.
+    monkeypatch.setattr(duel, "weapon_shoot_range", lambda _weapon: 0)
+    monkeypatch.setattr(duel, "equipment_power", lambda _char: 10)
+    melee = duel._duel_damage(attacker)
+    assert 18 <= melee <= 22, melee
+
+
+def test_duel_real_weapon_tiers_differ(env):
+    """На реальных данных: топ-оружие в дуэли бьёт заметно сильнее ПМ."""
+    import app.duel_grid as duel
+
+    st, _m = env
+    st.set_equipment_item(UID, "weapon", "ПМ")
+    pm_player = st.get_character(UID, refresh_energy=False)
+    pm_hits = [duel._duel_damage(pm_player) for _ in range(30)]
+    st.set_equipment_item(UID, "weapon", "Гаусс-пушка")
+    gauss_player = st.get_character(UID, refresh_energy=False)
+    gauss_hits = [duel._duel_damage(gauss_player) for _ in range(30)]
+    assert min(gauss_hits) > max(pm_hits), (min(gauss_hits), max(pm_hits))
+
+
+def test_duel_turn_timeout_advances_stuck_turn(env):
+    """Если соперник не отвечает, таймаут обязан передать ход, иначе дуэль висит."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.duel_grid import (
+        DuelGridSession,
+        get_duel_session_by_player,
+        process_duel_turn_timeouts,
+        save_duel_session,
+        start_duel_grid,
+    )
+
+    st, _m = env
+    other = UID + 1
+    st.create_character(other, "Соперник", "male")
+    st.set_faction(other, "Долг")
+
+    result, session = start_duel_grid(st, UID, other)
+    assert result.ok and session is not None, result.text
+    session.turn_deadline = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    save_duel_session(st, session)
+
+    outcomes = process_duel_turn_timeouts(st)
+    assert outcomes, "таймаут хода не обработан — дуэль останется висеть"
+    fresh = get_duel_session_by_player(st, UID)
+    assert fresh is not None
+    assert fresh.turn_seq == 1, (fresh.turn_seq, fresh.active_index)
+    assert fresh.active_player() == other
+    # Таймер нового хода снова в будущем — следующий тик не пропустит ход сразу.
+    assert fresh.turn_deadline != session.turn_deadline
+
+
+def test_duel_broken_deadlines_do_not_hang_forever(env):
+    """Сессия без валидных дат (старый формат) не должна вечно висеть в active_ids."""
+    from app.duel_grid import (
+        get_duel_session_by_player,
+        process_duel_turn_timeouts,
+        save_duel_session,
+        start_duel_grid,
+    )
+
+    st, _m = env
+    other = UID + 1
+    st.create_character(other, "Соперник", "male")
+    st.set_faction(other, "Долг")
+    result, session = start_duel_grid(st, UID, other)
+    assert result.ok and session is not None, result.text
+
+    session.turn_deadline = None
+    session.match_deadline = None
+    save_duel_session(st, session)
+
+    process_duel_turn_timeouts(st)
+    fresh = get_duel_session_by_player(st, UID)
+    assert fresh is not None and fresh.wave_mode, "битый таймер боя должен включать волну"
+
+    process_duel_turn_timeouts(st)
+    fresh = get_duel_session_by_player(st, UID)
+    assert fresh is not None and fresh.turn_seq >= 1, "битый таймер хода должен пропускаться"
+
+
+def test_duel_exit_forfeits_and_releases_player(env):
+    """«⬅️ В меню» из дуэли не должен оставлять игрока заблокированным."""
+    from app.duel_grid import get_duel_session_by_player, start_duel_grid
+    from app.player_busy import player_busy_reason
+
+    st, m = env
+    other = UID + 1
+    st.create_character(other, "Соперник", "male")
+    st.set_faction(other, "Долг")
+
+    result, session = start_duel_grid(st, UID, other)
+    assert result.ok and session is not None, result.text
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("duel:exit"))
+
+    _run(run())
+    assert get_duel_session_by_player(st, UID) is None
+    assert get_duel_session_by_player(st, other) is None
+    assert player_busy_reason(st, UID, auto_recover=False) is None
+    assert player_busy_reason(st, other, auto_recover=False) is None
+    text = _merged(m.sent)
+    assert "победил" in text or "проиграл" in text, text[:300]
+
+
+def test_duel_open_resumes_active_fight(env):
+    """«⚔️ Дуэль» во время боя возвращает в него, а не требует новый вызов."""
+    from app.duel_grid import start_duel_grid
+
+    st, m = env
+    other = UID + 1
+    st.create_character(other, "Соперник", "male")
+    st.set_faction(other, "Долг")
+    result, _session = start_duel_grid(st, UID, other)
+    assert result.ok, result.text
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("⚔️ Дуэль"))
+
+    _run(run())
+    text = _merged(m.sent)
+    assert "уже идёт дуэль" in text, text[:300]
+    assert any(t.startswith("📷") for _, t in m.sent), m.sent
+
+
+def test_zonemap_sends_photo(env):
+    """Карта Зоны уходит картинкой (а не только подписью)."""
+    st, m = env
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("locmap:zonemap"))
+        assert any(text.startswith("📷") for _, text in m.sent), m.sent
+
+    _run(run())
+
+
+def test_travel_home_button(env):
+    """«🏠 На базу» ведёт на домашнюю базу фракции, а не в общий список."""
+    from app.game_logic import faction_home_base
+
+    st, m = env
+    home = faction_home_base("Долг")
+    assert home == "Росток"
+    st.set_location(UID, "Кордон")  # уводим с базы, иначе кнопка честно скажет «ты уже дома»
+
+    async def run():
+        m.sent.clear()
+        await bot._handle_callback(m, st, _ev_cb("travel:home"))
+        text = _merged(m.sent)
+        assert home in text and "Выбери транспорт" in text, text[:200]
+        # И текстовая кнопка-алиас работает.
+        m.sent.clear()
+        await bot._handle_message(m, st, _ev("🏠 На базу"))
+        assert home in _merged(m.sent), _merged(m.sent)[:200]
+
+    _run(run())
+
+
+def test_vehicle_only_northern_routes():
+    """Машины доступны, только если хотя бы один конец маршрута — север."""
+    from types import SimpleNamespace
+
+    from app.game_logic import (
+        list_available_travel_modes,
+        vehicle_restriction_text,
+        vehicle_route_allowed,
+    )
+
+    assert vehicle_route_allowed("Припять", "Кордон")
+    assert vehicle_route_allowed("Кордон", "Рыжий лес")
+    assert vehicle_route_allowed("Радар", "Радар")
+    assert not vehicle_route_allowed("Кордон", "Свалка")
+    assert not vehicle_route_allowed("Бар", "Болото")
+    assert "Припять" in vehicle_restriction_text()
+
+    player = SimpleNamespace(
+        truck_owned=True, truck_durability=100, diesel=10,
+        niva_owned=True, niva_durability=100, gasoline=10,
+        bicycle_owned=True,
+    )
+    north = {m for m, *_ in list_available_travel_modes(player, origin="Кордон", destination="Припять")}
+    south = {m for m, *_ in list_available_travel_modes(player, origin="Кордон", destination="Свалка")}
+    assert {"niva", "truck"} <= north, north
+    assert "niva" not in south and "truck" not in south, south
+    assert {"foot", "bicycle"} <= south, south
 
 
 def test_info_text_full(env):

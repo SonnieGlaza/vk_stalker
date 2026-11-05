@@ -140,7 +140,7 @@ def _sortie_keyboard():
     return reply_keyboard(
         ["⚔️ Война", "🗺 Переход"],
         ["⚔️ Арена", "🪖 Рейды"],
-        ["📍 Локация"],
+        ["📍 Локация", "🗺 Карта Зоны", "🏠 На базу"],
         ["⬅️ В меню"],
     )
 
@@ -159,17 +159,20 @@ async def _sortie_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
 
 
 def _pda_keyboard(*, is_leader: bool = False):
-    """Клавиатура раздела КПК: как pda_keyboard в ТГ, но первой кнопкой «📟 КПК»
-    (просьба владельца), дальше «🧾 Профиль» и «💬 Чаты»."""
+    """Клавиатура раздела КПК.
+
+    «📟 КПК» из самого КПК убран (он уже открыт), карта — в «Вылазке»,
+    клановые задачи — в «Группировке», чтобы не дублировать разделы.
+    """
     rows: list[list[str]] = [
-        ["📟 КПК", "🧾 Профиль", "💬 Чаты"],
-        ["🏆 Рейтинг", "🗺 Карта", "📍 Локация"],
+        ["🧾 Профиль", "💬 Чаты"],
+        ["🏆 Рейтинг", "📍 Локация"],
         ["👥 Игроки", "🤝 Обмен"],
         ["💎 Находки", "💎 Арты"],
         ["📊 Дроп", "☠️ Смерти"],
         ["📊 Статистика", "📅 Ежедневка"],
         ["🔔 Уведомления", "🔥 Как не сдохнуть"],
-        ["🏛 Клановые задачи", "ℹ️ Информация"],
+        ["ℹ️ Информация"],
     ]
     if is_leader:
         rows[-1].append("📣 Сбор")
@@ -889,7 +892,7 @@ def _duel_fight_keyboard():
         [("🔫 ⬆️", "duel:shoot:up")],
         [("🔫 ⬅️", "duel:shoot:left"), ("🔫 ⬇️", "duel:shoot:down"), ("🔫 ➡️", "duel:shoot:right")],
         [("💊 Аптечка", "duel:medkit"), ("🏳 Сдаться", "duel:forfeit")],
-        [("🔄 Обновить", "duel:refresh"), ("⬅️ В меню", "duel:exit")],
+        [("🔄 Обновить", "duel:refresh"), ("🚪 Выйти (сдача)", "duel:exit")],
     )
 
 
@@ -917,8 +920,24 @@ def _duel_caption(storage: Storage, session: Any) -> str:
 
 
 async def _duel_open(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    """Список игроков для вызова."""
+    """Список игроков для вызова или возврат в уже идущий бой."""
+    from app.duel_grid import get_duel_session_by_player
+
     me = int(event.user_id)
+    session = get_duel_session_by_player(storage, me)
+    if session is not None:
+        await bot.send_message(
+            event.peer_id,
+            "⚔️ У тебя уже идёт дуэль — возвращаю в бой.",
+        )
+        await _duel_send_frames(
+            bot,
+            storage,
+            session,
+            int(session.challenger_id),
+            int(session.target_id),
+        )
+        return
     players = storage.list_players(limit=50)
     rows = []
     for row in players:
@@ -973,6 +992,24 @@ async def _duel_send_frames(bot: VkMessenger, storage: Storage, session: Any, a_
         await bot.send_message(b_id, caption, reply_markup=kb)
 
 
+async def _duel_notify_finished(bot: VkMessenger, storage: Storage, result: Any) -> None:
+    """Разослать итог дуэли обоим бойцам (а не только тому, кто нажал кнопку)."""
+    payload = getattr(result, "payload", None) or {}
+    if not payload.get("duel_done"):
+        return
+    winner_id = int(payload.get("winner_id") or 0)
+    loser_id = int(payload.get("loser_id") or 0)
+    fallback = str(getattr(result, "text", "") or "Дуэль завершена.")
+    for pid, key in ((winner_id, "winner_text"), (loser_id, "loser_text")):
+        if pid <= 0:
+            continue
+        text = str(payload.get(key) or fallback)
+        try:
+            await bot.send_message(pid, text, reply_markup=_menu_keyboard())
+        except Exception as exc:
+            logger.warning("duel result notify failed (%s): %s", pid, exc)
+
+
 async def _duel_apply(bot: VkMessenger, storage: Storage, event: VkEvent, action: str) -> None:
     """Применить ход и перерисовать кадр обоим, если дуэль продолжается."""
     from app.duel_grid import (
@@ -996,12 +1033,19 @@ async def _duel_apply(bot: VkMessenger, storage: Storage, event: VkEvent, action
         result = duel_forfeit(storage, me)
     else:
         result = None
+    payload = getattr(result, "payload", None) or {}
+    finished = bool(payload.get("duel_done"))
     if result is not None:
-        await bot.send_message(event.peer_id, result.text)
+        if finished:
+            await _duel_notify_finished(bot, storage, result)
+        else:
+            await bot.send_message(event.peer_id, result.text)
 
     session = get_duel_session_by_player(storage, me)
     if session is None:
-        await _menu(bot, storage, event)
+        # После завершения боя итог и клавиатура уже отправлены _duel_notify_finished.
+        if not finished:
+            await _menu(bot, storage, event)
         await _maybe_respawn_dead(bot, storage, event)
         return
     await _duel_send_frames(bot, storage, session, int(session.challenger_id), int(session.target_id))
@@ -1037,7 +1081,17 @@ async def _duel_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pay
         else:
             await _menu(bot, storage, event)
     elif cmd == "exit":
-        await _menu(bot, storage, event)
+        # Раньше выход просто открывал меню, но дуэль оставалась активной:
+        # player_busy блокировал все действия, а вернуться в бой было нечем.
+        # Теперь выход из боя = сдача, чтобы игрок гарантированно освободился.
+        from app.duel_grid import duel_forfeit, get_duel_session_by_player
+
+        session = get_duel_session_by_player(storage, int(event.user_id))
+        if session is not None:
+            result = duel_forfeit(storage, int(event.user_id))
+            await _duel_notify_finished(bot, storage, result)
+        else:
+            await _menu(bot, storage, event)
 
 
 # ---------------------------------------------------------------------------
@@ -1800,11 +1854,12 @@ async def _war_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payl
 
 
 def _faction_menu_keyboard():
+    # «Обзор» отдельной кнопкой не нужен: он показывается сразу при входе.
     return reply_keyboard(
-        ["🏛 Обзор", "💰 Казна"],
-        ["🎖 Звания", "📦 Склад"],
-        ["🏗 Постройки", "🏛 Клановые задачи"],
-        ["🤝 Союзы", "🚚 Гараж"],
+        ["💰 Казна", "🎖 Звания"],
+        ["📦 Склад", "🏗 Постройки"],
+        ["🏛 Клановые задачи", "🤝 Союзы"],
+        ["🚚 Гараж"],
         ["⬅️ В меню"],
     )
 
@@ -1874,15 +1929,171 @@ async def _faction_ranks(bot: VkMessenger, storage: Storage, event: VkEvent) -> 
     await bot.send_message(int(event.peer_id), text, reply_markup=_faction_menu_keyboard())
 
 
-async def _faction_warehouse(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    from app.game_logic import build_faction_group_overview
+def _warehouse_item_label(key: str) -> str:
+    from app.game_logic import ITEM_LABELS
 
-    text = build_faction_group_overview(storage, int(event.user_id))
+    return ITEM_LABELS.get(key, key)
+
+
+def _warehouse_sorted_items(items: dict[str, int]) -> list[tuple[str, int]]:
+    priority = {"materials": 0, "ammo_pack": 1, "medkit": 2, "energy_drink": 3}
+    return sorted(
+        ((str(key), int(amount)) for key, amount in items.items() if int(amount) > 0),
+        key=lambda row: (priority.get(row[0], 10), row[0]),
+    )
+
+
+def _warehouse_available(storage: Storage, user_id: int, direction: str, item_key: str) -> int:
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        return 0
+    if direction == "deposit":
+        return int((player.inventory or {}).get(item_key, 0))
+    if not player.faction:
+        return 0
+    return int(storage.get_faction_warehouse(player.faction).get(item_key, 0))
+
+
+async def _faction_warehouse(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    from app.game_logic import can_withdraw_faction_warehouse
+
+    # Переход в склад отменяет незавершённый ввод количества (иначе следующий
+    # текст снова уходил бы в «сколько сдать?»).
+    await VkFSM(int(event.user_id)).clear()
+    player = storage.get_character(int(event.user_id), refresh_energy=False)
+    if player is None:
+        await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
+        return
+    if not player.faction:
+        await bot.send_message(int(event.peer_id), "Склад доступен только бойцам группировки.")
+        return
+    warehouse = storage.get_faction_warehouse(player.faction)
+    lines = [f"📦 Склад «{player.faction}»", ""]
+    if warehouse:
+        for key, amount in _warehouse_sorted_items(warehouse):
+            lines.append(f"• {_warehouse_item_label(key)}: {amount}")
+    else:
+        lines.append("• Склад пуст")
+    can_withdraw = can_withdraw_faction_warehouse(storage, player)
+    lines.extend(
+        [
+            "",
+            "Сдавать может любой боец. Забирать — с 5 ранга или лидер группировки.",
+        ]
+    )
+    rows: list[list] = [[("📥 Сдать на склад", "faction:wh:deposit")]]
+    if can_withdraw:
+        rows.append([("📤 Забрать со склада", "faction:wh:withdraw")])
+    rows.append([("⬅️ В группировку", "faction:overview")])
+    await bot.send_message(int(event.peer_id), "\n".join(lines), reply_markup=inline_keyboard(*rows))
+
+
+async def _warehouse_list(bot: VkMessenger, storage: Storage, event: VkEvent, direction: str) -> None:
+    from app.game_logic import can_withdraw_faction_warehouse
+
+    user_id = int(event.user_id)
+    player = storage.get_character(user_id, refresh_energy=False)
+    if player is None:
+        return
+    if not player.faction:
+        await bot.send_message(int(event.peer_id), "Склад доступен только бойцам группировки.")
+        return
+    if direction == "deposit":
+        items = _warehouse_sorted_items(dict(player.inventory or {}))
+        title = "📥 Что сдаём на склад?"
+        empty = "В инвентаре нечего сдавать."
+        prefix = "faction:wh:dep"
+    else:
+        if not can_withdraw_faction_warehouse(storage, player):
+            await bot.send_message(
+                int(event.peer_id),
+                "Забирать со склада можно с 5 ранга (или лидеру группировки).",
+            )
+            return
+        items = _warehouse_sorted_items(storage.get_faction_warehouse(player.faction))
+        title = "📤 Что забираем со склада?"
+        empty = "Склад пуст."
+        prefix = "faction:wh:wd"
+    rows: list[list] = [
+        [(f"{_warehouse_item_label(key)} ×{amount}", f"{prefix}:{key}")]
+        for key, amount in items[:20]
+    ]
+    rows.append([("⬅️ К складу", "faction:warehouse")])
+    if len(items) == 0:
+        await bot.send_message(
+            int(event.peer_id),
+            empty,
+            reply_markup=inline_keyboard([("⬅️ К складу", "faction:warehouse")]),
+        )
+        return
+    await bot.send_message(int(event.peer_id), title, reply_markup=inline_keyboard(*rows))
+
+
+async def _warehouse_qty_prompt(
+    bot: VkMessenger, storage: Storage, event: VkEvent, direction: str, item_key: str
+) -> None:
+    user_id = int(event.user_id)
+    available = _warehouse_available(storage, user_id, direction, item_key)
+    if available <= 0:
+        await VkFSM(user_id).clear()
+        await bot.send_message(
+            int(event.peer_id),
+            "Этого предмета нет в нужном месте.",
+            reply_markup=inline_keyboard([("⬅️ К складу", "faction:warehouse")]),
+        )
+        return
+    fsm = VkFSM(user_id)
+    await fsm.set_state("warehouse_qty")
+    await fsm.update_data(wh_direction=direction, wh_item_key=item_key)
+    verb = "сдать" if direction == "deposit" else "забрать"
     await bot.send_message(
         int(event.peer_id),
-        text + "\n\n📦 Склад: пополнение/выдача будет здесь.",
-        reply_markup=_faction_menu_keyboard(),
+        f"Сколько «{_warehouse_item_label(item_key)}» {verb}?\n"
+        f"Доступно: {available}. Введи число или «всё».",
+        reply_markup=inline_keyboard([("⬅️ Отмена", "faction:warehouse")]),
     )
+
+
+async def _warehouse_qty_input(bot: VkMessenger, storage: Storage, event: VkEvent, text: str) -> None:
+    from app.game_logic import deposit_to_faction_warehouse, withdraw_from_faction_warehouse
+
+    user_id = int(event.user_id)
+    fsm = VkFSM(user_id)
+    data = await fsm.get_data()
+    direction = str(data.get("wh_direction") or "deposit")
+    item_key = str(data.get("wh_item_key") or "")
+    if not item_key:
+        await fsm.clear()
+        await _faction_warehouse(bot, storage, event)
+        return
+    available = _warehouse_available(storage, user_id, direction, item_key)
+    raw = (text or "").strip().lower().replace(" ", "").replace("\u00a0", "")
+    if raw in ("всё", "все", "all", "макс", "max"):
+        qty = available
+    elif raw.isdigit():
+        qty = int(raw)
+    else:
+        # Неверный ввод: состояние не сбрасываем — игрок просто пробует ещё раз.
+        await bot.send_message(
+            int(event.peer_id),
+            f"Введи целое число от 1 до {available} или «всё».",
+            reply_markup=inline_keyboard([("⬅️ К складу", "faction:warehouse")]),
+        )
+        return
+    if qty <= 0 or qty > available:
+        await bot.send_message(
+            int(event.peer_id),
+            f"Неверное количество. Доступно: {available}.",
+            reply_markup=inline_keyboard([("⬅️ К складу", "faction:warehouse")]),
+        )
+        return
+    await fsm.clear()
+    if direction == "deposit":
+        result = deposit_to_faction_warehouse(storage, user_id, item_key, qty)
+    else:
+        result = withdraw_from_faction_warehouse(storage, user_id, item_key, qty)
+    await bot.send_message(int(event.peer_id), result.text)
+    await _faction_warehouse(bot, storage, event)
 
 
 async def _faction_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
@@ -1896,6 +2107,16 @@ async def _faction_callback(bot: VkMessenger, storage: Storage, event: VkEvent, 
         await _faction_ranks(bot, storage, event)
     elif cmd == "warehouse":
         await _faction_warehouse(bot, storage, event)
+    elif cmd == "wh" and len(parts) >= 3:
+        sub = parts[2]
+        if sub == "dep" and len(parts) >= 4:
+            await _warehouse_qty_prompt(bot, storage, event, "deposit", ":".join(parts[3:]))
+        elif sub == "wd" and len(parts) >= 4:
+            await _warehouse_qty_prompt(bot, storage, event, "withdraw", ":".join(parts[3:]))
+        elif sub == "deposit":
+            await _warehouse_list(bot, storage, event, "deposit")
+        elif sub == "withdraw":
+            await _warehouse_list(bot, storage, event, "withdraw")
     elif cmd == "tz":
         # Собираем через ":", чтобы amount совпал с ветками "dep:*"/"wd:*"
         # (payload "faction:tz:dep:500" -> amount "dep:500").
@@ -2605,9 +2826,11 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
         TRANSPORT_QUEST_REWARD_MULT,
         describe_travel_fuel_status,
         can_use_n2o_during_travel,
+        faction_home_base,
         format_location_display,
         is_traveling,
         needs_field_repair,
+        vehicle_restriction_text,
     )
 
     user_id = int(event.user_id)
@@ -2635,6 +2858,9 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
     safe_page = max(0, min(int(page or 0), total_pages - 1))
     chunk = locations[safe_page * _TRAVEL_PAGE_SIZE : (safe_page + 1) * _TRAVEL_PAGE_SIZE]
     rows: list[list] = []
+    home = faction_home_base(player.faction)
+    if home and home != player.location:
+        rows.append([(f"🏠 На базу: {home}", "travel:home")])
     for location in chunk:
         name = str(location.get("name") or "")
         if name and name != player.location:
@@ -2652,6 +2878,7 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
         f"Пешком ×1, велосипед ×{TRAVEL_SPEED_BICYCLE:g} "
         f"(+награда контракта ×{TRANSPORT_QUEST_REWARD_MULT['bicycle']:g} если доехал на нём), "
         f"Нива ×{TRAVEL_SPEED_NIVA:g}, грузовик ×{TRAVEL_SPEED_TRUCK:g} (+ дизель).\n"
+        f"{vehicle_restriction_text()}\n"
         "Переход занимает реальное время (1 игровая мин ≈ 10 сек).\n\n"
         f"{describe_travel_fuel_status(player)}"
     )
@@ -2666,21 +2893,45 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
 
 
 async def _travel_pick(bot: VkMessenger, storage: Storage, event: VkEvent, destination: str) -> None:
-    from app.game_logic import list_available_travel_modes
+    from app.game_logic import (
+        VEHICLE_TRAVEL_MODES,
+        list_available_travel_modes,
+        vehicle_restriction_text,
+        vehicle_route_allowed,
+    )
 
     user_id = int(event.user_id)
     player = storage.get_character(user_id, refresh_energy=False)
     if player is None:
         await bot.send_message(int(event.peer_id), "Сначала создай персонажа.")
         return
-    modes = list_available_travel_modes(player, bound_transport=storage.get_bound_transport(user_id))
+    bound = storage.get_bound_transport(user_id)
+    vehicles_allowed = vehicle_route_allowed(player.location, destination)
+    if bound in VEHICLE_TRAVEL_MODES and not vehicles_allowed:
+        await bot.send_message(
+            int(event.peer_id),
+            f"{vehicle_restriction_text()}\n"
+            f"Ты за рулём, но на этот маршрут машина не ходит. "
+            "Сдай технику в гараж, чтобы ехать по остальной Зоне.",
+            reply_markup=inline_keyboard([("⬅️ К локациям", "travel:open")]),
+        )
+        return
+    modes = list_available_travel_modes(
+        player,
+        bound_transport=bound,
+        origin=str(player.location),
+        destination=destination,
+    )
     rows: list[list] = []
     for mode, label, _speed, energy in modes:
         rows.append([(f"{label} (−{energy} эн.)", f"travel:go:{mode}:{destination}")])
     rows.append([("⬅️ К локациям", "travel:open")])
+    note = ""
+    if not vehicles_allowed and (player.niva_owned or player.truck_owned):
+        note = f"\n\n{vehicle_restriction_text()}"
     await bot.send_message(
         int(event.peer_id),
-        f"Куда: «{destination}».\nВыбери транспорт:",
+        f"Куда: «{destination}».\nВыбери транспорт:{note}",
         reply_markup=inline_keyboard(*rows),
     )
 
@@ -2710,6 +2961,17 @@ async def _travel_callback(bot: VkMessenger, storage: Storage, event: VkEvent, p
     cmd = parts[1] if len(parts) > 1 else ""
     if cmd == "open":
         await _travel_open(bot, storage, event, 0)
+    elif cmd == "home":
+        from app.game_logic import faction_home_base
+
+        player = storage.get_character(int(event.user_id), refresh_energy=False)
+        if player is None:
+            return
+        home = faction_home_base(player.faction)
+        if str(player.location) == home:
+            await bot.send_message(int(event.peer_id), f"Ты уже на своей базе: «{home}».")
+            return
+        await _travel_pick(bot, storage, event, home)
     elif cmd == "page":
         page = int(parts[-1]) if len(parts) > 2 and parts[-1].isdigit() else 0
         await _travel_open(bot, storage, event, page)
@@ -3562,7 +3824,10 @@ async def _eco_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payl
             await bot.send_message(int(event.peer_id), result.text)
             await _eco_market_list(bot, storage, event)
     elif cmd == "smuggle":
-        await _smuggle_menu(bot, storage, event)
+        # Важно: eco:smuggle:menu / to / status / abandon должны уходить в
+        # _smuggle_callback, иначе любая кнопка контрабанды просто
+        # переоткрывала меню (выбор точки сдачи «не работал»).
+        await _smuggle_callback(bot, storage, event, payload)
 
 
 async def _eco_price_input(bot: VkMessenger, storage: Storage, event: VkEvent, text: str) -> None:
@@ -4565,11 +4830,12 @@ def _build_info_text() -> str:
         "ℹ️ Информация по игре\n\n"
         "Разделы меню:\n"
         "• 📟 КПК — раздел сталкера: 🧾 Профиль (медали, ID, фракция, звание), "
-        "💬 Чаты, 🏆 Рейтинг, 🗺 Карта Зоны, 📍 Локация, 👥 Игроки, 🤝 Обмен, "
+        "💬 Чаты, 🏆 Рейтинг, 📍 Локация, 👥 Игроки, 🤝 Обмен, "
         "💎 Находки/Арты, 📊 Дроп, ☠️ Смерти, 📊 Статистика, 📅 Ежедневка, "
-        "🔔 Уведомления, 🔥 Как не сдохнуть, 🏛 Клановые задачи, 🔗 Рефералка.\n"
+        "🔔 Уведомления, 🔥 Как не сдохнуть, 🔗 Рефералка.\n"
         "• 🏕 Вылазка — стрелки по локации и кнопки зоны (торговец/аптека, "
-        "поиск артов, схрон, лаборатория, логово, блокпост), «🗺 Переходы» — смена локации.\n"
+        "поиск артов, схрон, лаборатория, логово, блокпост), «🗺 Карта Зоны», "
+        "«🗺 Переходы» — смена локации и «🏠 На базу».\n"
         "  ⚔️ Арена — тренировка 8×8 на базе; 👥 кооп до 3 игроков; "
         "🪖 рейды — тактика 9×9 на логово/склад врага.\n"
         "• 👥 Группировка — склад/казна/гараж, звания, постройки, клановые задачи, союзы.\n"
@@ -5776,6 +6042,45 @@ async def _zone_tick(bot: VkMessenger) -> None:
         logger.info("zone tick #%d занял %.2f с", tick, time.monotonic() - _tick_t0)
 
 
+async def _duel_tick(bot: VkMessenger) -> None:
+    """Фон: таймауты ходов дуэли.
+
+    Без этого цикла дуэль зависала навсегда, если соперник перестал отвечать:
+    ход переходил к нему, а process_duel_turn_timeouts никто не вызывал.
+    """
+    while True:
+        await asyncio.sleep(5)
+        storage = get_storage()
+        try:
+            from app.duel_grid import get_duel_session_by_player, process_duel_turn_timeouts
+
+            updates: set[str] = set()
+            done: set[str] = set()
+            for pid, result in process_duel_turn_timeouts(storage):
+                payload = getattr(result, "payload", None) or {}
+                if payload.get("duel_done"):
+                    duel_id = str(payload.get("duel_id") or "")
+                    if duel_id and duel_id in done:
+                        continue
+                    if duel_id:
+                        done.add(duel_id)
+                    await _duel_notify_finished(bot, storage, result)
+                    continue
+                session = get_duel_session_by_player(storage, int(pid))
+                if session is None or session.duel_id in updates:
+                    continue
+                updates.add(session.duel_id)
+                await _duel_send_frames(
+                    bot,
+                    storage,
+                    session,
+                    int(session.challenger_id),
+                    int(session.target_id),
+                )
+        except Exception:
+            logger.exception("Duel timeout tick failed")
+
+
 async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
     text = vk_plain(event.text).strip()
     lowered = text.lower()
@@ -5808,6 +6113,9 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         return
     if fsm_state == "topup_custom":
         await _topup_custom_input(bot, storage, event, text)
+        return
+    if fsm_state == "warehouse_qty":
+        await _warehouse_qty_input(bot, storage, event, text)
         return
     if fsm_state == "reg_referral":
         await _handle_referral_input(bot, storage, event, text)
@@ -5892,10 +6200,18 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
             await _profile(bot, storage, event)
     elif norm == "💬 Чаты":
         await _pda_chats(bot, storage, event)
-    elif norm in ("🗺 Карта", "карта"):
+    elif norm in ("🗺 Карта", "🗺 Карта Зоны", "карта", "карта зоны"):
         await _locmap_zonemap(bot, storage, event)
     elif norm in ("📍 Локация", "локация"):
         await _walk_open(bot, storage, event)
+    elif norm in ("🏠 На базу", "на базу"):
+        from app.game_logic import faction_home_base
+
+        home = faction_home_base(player.faction)
+        if str(player.location) == home:
+            await bot.send_message(int(event.peer_id), f"Ты уже на своей базе: «{home}».")
+        else:
+            await _travel_pick(bot, storage, event, home)
     elif norm in ("🗺 Переход", "🗺 Переходы", "переход", "переходы"):
         await _travel_open(bot, storage, event, 0)
     elif norm in ("👥 Игроки", "игроки"):
@@ -6364,10 +6680,10 @@ def main(use_webhook: bool | None = None) -> None:
         from app.vk_platform import run_webhook
 
         logger.info("VK Callback webhook стартует (port=%s)", settings.webhook_port)
-        run_webhook(settings, handle_event, background=[_zone_tick])
+        run_webhook(settings, handle_event, background=[_zone_tick, _duel_tick])
     else:
         logger.info("VK Long Poll стартует (group_id=%s)", settings.group_id)
-        run_longpoll(settings, handle_event, background=[_zone_tick])
+        run_longpoll(settings, handle_event, background=[_zone_tick, _duel_tick])
 
 
 if __name__ == "__main__":

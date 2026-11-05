@@ -1328,6 +1328,25 @@ TRAVEL_ENERGY_FOOT = 16
 TRAVEL_ENERGY_BICYCLE = 11
 TRAVEL_ENERGY_NIVA = 12
 TRAVEL_ENERGY_TRUCK = 8
+# Машины (Нива/грузовик) ходят только по северу Зоны. Разрешён маршрут,
+# если хотя бы одна из точек (откуда/куда) — северная: так можно заехать
+# на север с базы и вернуться обратно, но нельзя кататься по всему югу.
+NORTHERN_VEHICLE_LOCATIONS: frozenset[str] = frozenset({"Припять", "Рыжий лес", "Радар"})
+VEHICLE_TRAVEL_MODES: tuple[str, ...] = ("niva", "truck")
+
+
+def vehicle_route_allowed(origin: str | None, destination: str | None) -> bool:
+    """Можно ли использовать машину на маршруте origin → destination."""
+    return str(origin or "") in NORTHERN_VEHICLE_LOCATIONS or str(
+        destination or ""
+    ) in NORTHERN_VEHICLE_LOCATIONS
+
+
+def vehicle_restriction_text() -> str:
+    return (
+        "Машины (Нива/грузовик) ходят только по северу Зоны: "
+        "Припять, Рыжий лес, Радар."
+    )
 TOPUP_RATE_RU_PER_STAR = 150
 CONTRACT_CANCEL_PENALTY_RU = 50
 CONTRACT_CANCEL_RATING_PENALTY = 1
@@ -6629,16 +6648,30 @@ def _compute_niva_wear(distance_px: float | None, travel_minutes: int) -> int:
     return random.randint(min_wear, max_wear)
 
 
-def list_available_travel_modes(character: Character, *, bound_transport: str | None = None) -> list[tuple[str, str, float, int]]:
-    """Доступные режимы: (mode, label, speed_mult, energy_cost)."""
+def list_available_travel_modes(
+    character: Character,
+    *,
+    bound_transport: str | None = None,
+    origin: str | None = None,
+    destination: str | None = None,
+) -> list[tuple[str, str, float, int]]:
+    """Доступные режимы: (mode, label, speed_mult, energy_cost).
+
+    Если переданы origin/destination, машины скрываются на не северных
+    маршрутах — см. vehicle_route_allowed.
+    """
+    vehicles_allowed = True
+    if origin is not None or destination is not None:
+        vehicles_allowed = vehicle_route_allowed(origin, destination)
+
     bound = bound_transport
-    if bound in ("niva", "truck"):
+    if bound in VEHICLE_TRAVEL_MODES:
         options: list[tuple[str, str, float, int]] = []
-        if bound == "niva" and can_travel_by_niva(character):
+        if bound == "niva" and can_travel_by_niva(character) and vehicles_allowed:
             options.append(
                 ("niva", f"Нива ×{TRAVEL_SPEED_NIVA:g}", float(TRAVEL_SPEED_NIVA), TRAVEL_ENERGY_NIVA)
             )
-        elif bound == "truck" and can_travel_by_truck(character):
+        elif bound == "truck" and can_travel_by_truck(character) and vehicles_allowed:
             options.append(
                 (
                     "truck",
@@ -6661,11 +6694,11 @@ def list_available_travel_modes(character: Character, *, bound_transport: str | 
                 TRAVEL_ENERGY_BICYCLE,
             )
         )
-    if can_travel_by_niva(character):
+    if can_travel_by_niva(character) and vehicles_allowed:
         options.append(
             ("niva", f"Нива ×{TRAVEL_SPEED_NIVA:g}", float(TRAVEL_SPEED_NIVA), TRAVEL_ENERGY_NIVA)
         )
-    if can_travel_by_truck(character):
+    if can_travel_by_truck(character) and vehicles_allowed:
         options.append(
             (
                 "truck",
@@ -6682,9 +6715,16 @@ def _resolve_travel_transport(
     preferred_mode: str | None = None,
     *,
     bound_transport: str | None = None,
+    origin: str | None = None,
+    destination: str | None = None,
 ) -> tuple[str, float, int, str | None]:
     """Выбрать режим: preferred если доступен, иначе самый быстрый из доступных."""
-    options = list_available_travel_modes(character, bound_transport=bound_transport)
+    options = list_available_travel_modes(
+        character,
+        bound_transport=bound_transport,
+        origin=origin,
+        destination=destination,
+    )
     by_mode = {mode: (mode, speed, energy) for mode, _label, speed, energy in options}
     notes: list[str] = []
     if character.truck_owned and character.truck_durability > 0 and character.diesel <= 0:
@@ -6840,9 +6880,19 @@ def travel_to(
     # Базы группировок: чужим вход не запрещён — это вражеская локация,
     # и на ней сработает блокпост (см. location_requires_blockpost).
 
+    vehicles_allowed = vehicle_route_allowed(character.location, destination)
+    if transport_mode in VEHICLE_TRAVEL_MODES and not vehicles_allowed:
+        return ActionResult(False, vehicle_restriction_text())
+
     bound_transport = storage.get_bound_transport(telegram_id)
-    if bound_transport in ("niva", "truck"):
+    if bound_transport in VEHICLE_TRAVEL_MODES:
         vehicle_label = _vehicle_label_for_key(bound_transport)
+        if not vehicles_allowed:
+            return ActionResult(
+                False,
+                f"{vehicle_restriction_text()} Сдай {vehicle_label} в гараж, "
+                "чтобы ехать по остальной Зоне.",
+            )
         if transport_mode in ("foot", "bicycle") or (
             transport_mode is not None and transport_mode != bound_transport
         ):
@@ -6858,10 +6908,15 @@ def travel_to(
         available = {
             mode
             for mode, *_rest in list_available_travel_modes(
-                character, bound_transport=bound_transport
+                character,
+                bound_transport=bound_transport,
+                origin=str(character.location),
+                destination=destination,
             )
         }
         if transport_mode not in available:
+            if transport_mode in VEHICLE_TRAVEL_MODES and not vehicles_allowed:
+                return ActionResult(False, vehicle_restriction_text())
             labels = {
                 "truck": "Недостаточно дизеля или грузовик недоступен.",
                 "niva": "Недостаточно бензина или Нива недоступна.",
@@ -6874,6 +6929,8 @@ def travel_to(
         character,
         preferred_mode=transport_mode,
         bound_transport=bound_transport,
+        origin=str(character.location),
+        destination=destination,
     )
     transport_mode = picked_mode
     if transport_mode == "truck" and not can_travel_by_truck(character):
@@ -7872,7 +7929,12 @@ def cancel_all_raids_by_leader(storage: Storage, telegram_id: int) -> ActionResu
 
 
 def _normalize_item_key(item_key: str) -> str:
-    return item_key if item_key in WAREHOUSE_ITEM_KEYS else "ammo_pack"
+    """Склад принимает любой предмет из инвентаря, ключ не подменяем.
+
+    Раньше всё, чего не было в WAREHOUSE_ITEM_KEYS, молча превращалось
+    в «ammo_pack» — из-за этого нельзя было сдать материалы/еду/прочее.
+    """
+    return str(item_key or "").strip()
 
 
 def character_rank_level(character: Character) -> int:
@@ -10663,9 +10725,19 @@ def start_smuggling_run(
     if busy:
         return ActionResult(False, busy)
 
+    vehicles_allowed = vehicle_route_allowed(player.location, destination)
+    if transport_mode in VEHICLE_TRAVEL_MODES and not vehicles_allowed:
+        return ActionResult(False, vehicle_restriction_text())
+
     bound_transport = storage.get_bound_transport(telegram_id)
-    if bound_transport in ("niva", "truck"):
+    if bound_transport in VEHICLE_TRAVEL_MODES:
         vehicle_label = _vehicle_label_for_key(bound_transport)
+        if not vehicles_allowed:
+            return ActionResult(
+                False,
+                f"{vehicle_restriction_text()} Сдай {vehicle_label} в гараж, "
+                "чтобы ехать по остальной Зоне.",
+            )
         if transport_mode in ("foot", "bicycle") or (
             transport_mode is not None and transport_mode != bound_transport
         ):
@@ -10678,9 +10750,17 @@ def start_smuggling_run(
 
     if transport_mode is not None:
         available = {
-            mode for mode, *_rest in list_available_travel_modes(player, bound_transport=bound_transport)
+            mode
+            for mode, *_rest in list_available_travel_modes(
+                player,
+                bound_transport=bound_transport,
+                origin=str(player.location),
+                destination=destination,
+            )
         }
         if transport_mode not in available:
+            if transport_mode in VEHICLE_TRAVEL_MODES and not vehicles_allowed:
+                return ActionResult(False, vehicle_restriction_text())
             labels = {
                 "truck": "Недостаточно дизеля или грузовик недоступен.",
                 "niva": "Недостаточно бензина или Нива недоступна.",
@@ -10693,6 +10773,8 @@ def start_smuggling_run(
         player,
         preferred_mode=transport_mode,
         bound_transport=bound_transport,
+        origin=str(player.location),
+        destination=destination,
     )
     transport_mode = picked_mode
     if transport_mode == "truck" and not can_travel_by_truck(player):

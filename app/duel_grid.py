@@ -87,7 +87,11 @@ def _parse_deadline(raw: str | None) -> datetime | None:
 def _duel_damage(attacker: Character) -> int:
     weapon = str(attacker.equipment.get("weapon", "Нож"))
     if weapon_shoot_range(weapon) > 0:
-        return min(15, weapon_damage(weapon))
+        # Раньше здесь стоял min(15, ...), и броня с гашением ≥15 делала
+        # ПМ и топ-оружие одинаковыми — «работает только броня».
+        # Теперь урон оружия масштабируется как в остальных режимах,
+        # а броня режет его уже в apply_incoming_damage.
+        return weapon_damage(weapon)
     base = max(4, equipment_power(attacker) * 2)
     lo = max(1, base - 2)
     hi = base + 2
@@ -567,7 +571,10 @@ def _check_match_timeout(storage: Storage, session: DuelGridSession, expected_se
     if session.wave_mode:
         return None
     deadline = _parse_deadline(session.match_deadline)
-    if deadline is None or _utc_now() <= deadline:
+    # Битая/отсутствующая дата раньше означала вечный бой: таймер не истекал,
+    # волна не начиналась, а ходы бесконечно пропускались. Считаем такой бой
+    # просроченным, чтобы он гарантированно завершился.
+    if deadline is not None and _utc_now() <= deadline:
         return None
     c_alive = session.hp.get(str(session.challenger_id), 0) > 0
     t_alive = session.hp.get(str(session.target_id), 0) > 0
@@ -766,6 +773,7 @@ def process_duel_turn_timeouts(storage: Storage) -> list[tuple[int, ActionResult
         return outcomes
     if not isinstance(duel_ids, list):
         return outcomes
+    seen_ids = {str(x) for x in duel_ids}
     still_active: list[str] = []
     finished: set[str] = set()
     for duel_id in duel_ids:
@@ -795,7 +803,9 @@ def process_duel_turn_timeouts(storage: Storage) -> list[tuple[int, ActionResult
             continue
 
         deadline = _parse_deadline(session.turn_deadline)
-        if deadline is None or now <= deadline:
+        # None = сессия без валидного дедлайна (старый/битый формат).
+        # Раньше такой бой навсегда оставался в active_ids и блокировал игроков.
+        if deadline is not None and now <= deadline:
             still_active.append(str(duel_id))
             continue
         active = session.active_player()
@@ -819,6 +829,17 @@ def process_duel_turn_timeouts(storage: Storage) -> list[tuple[int, ActionResult
                 ActionResult(True, "Время вышло — ход пропущен.", payload={"duel_active": True}),
             )
         )
+    # Не терять дуэли, начатые другим потоком (webhook), пока шёл этот проход:
+    # иначе новая дуэль выпадала из active_ids и больше не получала таймауты.
+    raw_now = storage.get_meta("duel:grid:active_ids")
+    if raw_now:
+        try:
+            now_ids = [str(x) for x in json.loads(raw_now)]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            now_ids = []
+        for duel_id in now_ids:
+            if duel_id not in seen_ids and duel_id not in still_active:
+                still_active.append(duel_id)
     storage.set_meta("duel:grid:active_ids", json.dumps(still_active, ensure_ascii=False))
     return outcomes
 

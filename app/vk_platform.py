@@ -401,6 +401,12 @@ class VkMessenger:
             logger.warning("send_photo: пустые данные фото (peer %s)", chat_id)
             return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
 
+        # Приводим картинку к RGB/JPEG: VK нестабильно принимает PNG с альфой,
+        # палитрой и «сырым» content-type. Нормализация чинит карту Зоны и кадры.
+        normalized = await asyncio.to_thread(_normalize_photo, data)
+        if normalized:
+            data = normalized
+
         # Только одна попытка загрузить как фото. Если не вышло — один запасной путь
         # загрузки документом, затем текст без картинки; циклов повторных попыток нет.
         attachment = await self._upload_photo_attachment(data, int(chat_id))
