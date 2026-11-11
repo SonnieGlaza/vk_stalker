@@ -525,6 +525,289 @@ LAB_DEFS["limit3"] = _lab_variant(
 )
 
 
+# ---------------------------------------------------------------------------
+# Предел-4 (Темная долина): отдельная лаборатория по карте из «фиксы».
+# Вход сверху (лестницы), тёмные комнаты, 5 мутантов на первом уровне,
+# ключ-карта у учёных, документы и лут в комнатах, вожак кровососов на третьем.
+# ---------------------------------------------------------------------------
+
+DOC_LIMIT4_1 = (
+    "ДОКУМЕНТ №001. Дата: 14.03.1986. Тема: Начало проекта «Эволюция».\n\n"
+    "Сегодня состоялось первое совещание по проекту. Цель исследований — создание "
+    "бойца нового поколения. Человека, способного выдерживать экстремальные нагрузки, "
+    "не испытывать страха, обладать повышенной регенерацией тканей и физической силой, "
+    "значительно превосходящей человеческие показатели.\n\n"
+    "Военное руководство требует результатов в кратчайшие сроки. Мы не создаём оружие. "
+    "Мы создаём идеального солдата. По крайней мере, именно так я объяснял себе "
+    "происходящее, подписывая документы о начале экспериментов над добровольцами.\n\n"
+    "ДОКУМЕНТ №002. Дата: 29.08.1986. Тема: Первые результаты.\n\n"
+    "Первые испытуемые демонстрируют положительную динамику: увеличение мышечной массы — "
+    "34%, устойчивость к боли — значительно выше нормы, реакция на внешние раздражители — "
+    "ускорена, регенерация повреждений — ускорена.\n\n"
+    "Однако обнаружились побочные эффекты. У двух испытуемых наблюдается полное отсутствие "
+    "эмоциональной реакции. Один из них напал на сотрудника во время обычного медицинского "
+    "осмотра. При попытке успокоить пациента он вырвал металлическую ножку стола и нанёс "
+    "охраннику тяжёлые повреждения.\n\n"
+    "Руководитель проекта считает это временным отклонением. Я начинаю сомневаться.\n\n"
+    "ДОКУМЕНТ №003. Дата: 11.01.1987. Тема: Изменение программы.\n\n"
+    "Прежняя методика признана недостаточно эффективной. После ряда неудач было принято "
+    "решение перейти к более глубокому вмешательству в организм испытуемых.\n\n"
+    "Новые субъекты демонстрируют поразительные результаты. Они способны переносить ранения, "
+    "которые должны были бы стать смертельными. Их мышцы продолжают функционировать даже "
+    "при серьёзном повреждении тканей.\n\n"
+    "Но есть одна проблема. Они больше не воспринимают людей как себе подобных. Вчера "
+    "испытуемый №12 заговорил с лаборантом. Первые слова за несколько месяцев: "
+    "«Я слышу, как у тебя бьётся сердце». Через несколько секунд он попытался перегрызть "
+    "стекло защитной камеры."
+)
+
+DOC_LIMIT4_2 = (
+    "ДОКУМЕНТ №004. Дата: 03.04.1987. ОСОБОЕ СОДЕРЖАНИЕ. Тема: Необратимые изменения.\n\n"
+    "Мы потеряли контроль над проектом. Все шесть оставшихся испытуемых подверглись "
+    "необратимым физиологическим изменениям. Их кожа стала бледной, практически прозрачной. "
+    "Мышечная структура изменилась. Челюсти удлинились, зубы приобрели форму, совершенно "
+    "нехарактерную для человека.\n\n"
+    "Они перестали реагировать на собственные имена. Вместо речи издают низкие звуки, "
+    "напоминающие хриплый шёпот. Самое страшное — они научились передвигаться бесшумно. "
+    "Сегодня один из субъектов исчез из поля зрения камеры наблюдения. Его нашли спустя "
+    "двадцать минут на потолке испытательной камеры. Он смотрел прямо в объектив. "
+    "Я уверен, что он понимал, что за ним наблюдают.\n\n"
+    "ДОКУМЕНТ №005. Дата: 17.04.1987. Тема: Новый вид организма.\n\n"
+    "Военные представители посетили лабораторию. После осмотра результатов было принято "
+    "решение прекратить финансирование проекта. Объекты признаны непригодными для военного "
+    "использования. В отчёте их назвали биологическими аномалиями.\n\n"
+    "Между собой сотрудники используют другое название — «Кровососы». Название появилось "
+    "после того, как один из охранников был найден мёртвым в техническом коридоре. На его шее "
+    "обнаружили две глубокие раны. Крови практически не осталось. Возможно, это название "
+    "вполне оправданно. Все шесть объектов переведены в изолированные камеры нижнего уровня. "
+    "Приказ: не приближаться к клеткам без вооружённой охраны.\n\n"
+    "ДОКУМЕНТ №006. Дата: 22.04.1987. АВАРИЙНАЯ ЗАПИСЬ. Тема: Поведение объектов.\n\n"
+    "Сегодня произошло нечто, чего никто не мог предвидеть. Объекты начали "
+    "взаимодействовать друг с другом. Раньше каждый из них находился в отдельной камере "
+    "и практически не проявлял интереса к соседям. Теперь же они собираются возле "
+    "перегородок и издают одинаковые звуки. Это напоминает попытку общения.\n\n"
+    "В 02:17 камеры зафиксировали странное поведение объекта №03. Он подошёл к решётке, "
+    "приложил к ней обе руки и начал медленно раскачивать конструкцию. Через несколько "
+    "секунд остальные пять объектов сделали то же самое. Они действовали одновременно. "
+    "Я приказал усилить охрану. Не могу избавиться от ощущения, что они чего-то ждут."
+)
+
+DOC_LIMIT4_3 = (
+    "ДОКУМЕНТ №007. Дата: 23.04.1987, 01:43. Личная запись старшего научного сотрудника.\n\n"
+    "Я не спал уже двое суток. Охрана доложила, что ночью из нижнего блока доносились "
+    "человеческие голоса. Это невозможно. Объекты давно утратили способность говорить. "
+    "Но охранник утверждает, что слышал своё имя. Из динамиков наблюдения доносились слова: "
+    "«Открой...», «Холодно...», «Помоги...». Самое ужасное — голос принадлежал моей дочери. "
+    "Она погибла три года назад. Я прослушал запись лично. Это действительно её голос. "
+    "Я потребовал отключить аудиосистему нижнего блока. Мне отказали.\n\n"
+    "ДОКУМЕНТ №008. Дата: 23.04.1987, 03:06. КРИТИЧЕСКАЯ СИТУАЦИЯ. Тема: Повреждение камер.\n\n"
+    "Чёрт возьми. Они больше не просто раскачивают решётки. Объект №01 сломал крепление "
+    "внутренней двери. Объект №04 каким-то образом проник в вентиляционную шахту камеры, но "
+    "пока не смог выбраться. Остальные начали биться о стены. Мы слышим металлический скрежет "
+    "даже на третьем уровне.\n\n"
+    "Охрана открыла огонь через смотровые окна. Пули почти не остановили их. Один из объектов "
+    "получил несколько попаданий в грудь, упал, пролежал около минуты, а затем поднялся. "
+    "Он даже не посмотрел на охранников. Он смотрел на меня. Я видел его глаза. В них не "
+    "осталось ничего человеческого.\n\n"
+    "ДОКУМЕНТ №009. Дата: 23.04.1987, 03:41. Запись с пульта управления.\n\n"
+    "Связь с нижним блоком нестабильна. Три камеры содержания имеют серьёзные повреждения. "
+    "Объекты №02 и №05 находятся возле главной двери. Объект №03 перестал двигаться. "
+    "Возможно, он погиб. Объект №06 всё время смотрит в камеру наблюдения. Он улыбается. "
+    "Я знаю, что это звучит безумно, но мне кажется, что он ждёт, когда мы откроем дверь. "
+    "В коридоре слышны удары. С каждым разом всё ближе.\n\n"
+    "ДОКУМЕНТ №010. Дата: 23.04.1987, 03:58. ПОСЛЕДНЯЯ ЗАПИСЬ ПЕРЕД АВАРИЕЙ.\n\n"
+    "03:58 — Началось движение всех объектов. 04:00 — Зафиксирована деформация металлических "
+    "дверей камер №01 и №02. 04:02 — Система блокировки сообщает о критическом падении "
+    "давления в гидравлических замках. 04:03 — Охрана покинула пост. 04:04 — Объект №01 "
+    "просунул руку через повреждённую решётку. Его конечность значительно длиннее, чем при "
+    "предыдущих осмотрах. 04:05 — Все объекты начали издавать один и тот же звук. "
+    "04:06 — Главная дверь камеры №04 прогнулась внутрь.\n\n"
+    "Голос учёного: «Господи... Они понимают, что мы здесь. Они всё это время понимали». "
+    "Слышен металлический скрежет. «Мы думали, что создаём солдат. Мы хотели сделать "
+    "человека сильнее, быстрее, выносливее... Но мы убрали всё, что делало их людьми». "
+    "Слышен крик. «НЕ ОТКРЫВАЙТЕ ВТОРОЙ КОНТУР! СЛЫШИТЕ?! НЕ—» Громкий удар. Помехи.\n\n"
+    "04:07 — АВАРИЙНОЕ ПИТАНИЕ ОТКЛЮЧЕНО.\n\n"
+    "ДОПОЛНИТЕЛЬНАЯ ЗАПИСЬ. Дата неизвестна. Найдена на обороте документа №010.\n\n"
+    "Если кто-нибудь это читает... Не спускайтесь на нижний уровень. Мы заперли их не потому, "
+    "что они были опасны. Мы заперли их, потому что боялись признать, что они всё ещё "
+    "помнят, кем были раньше. Я видел, как один из них плакал. Он стоял за стеклом и смотрел "
+    "на фотографию своей семьи, которую я случайно оставил на столе. Он плакал, а потом "
+    "начал биться головой о стекло. Я не знаю, что страшнее: то, во что мы их превратили, "
+    "или то, что где-то внутри них до сих пор остался человек. Они уже почти выбрались. "
+    "И, кажется, теперь они знают, кто виноват."
+)
+
+LEVEL_INTROS_LIMIT4: dict[int, str] = {
+    1: (
+        "📍 Объект «Предел-4». Ты спускаешься с лестницы на верхнем ярусе. "
+        "Свет только в коридорах, комнаты тонут в темноте — пока не зайдёшь внутрь. "
+        "В красном секторе работали учёные: у них ключ-карта от нижних дверей."
+    ),
+    2: (
+        "📍 Архив лаборатории. Здесь хранили документы проекта «Эволюция». "
+        "Часть страниц порвана, часть залита чем-то бурым. В темноте кто-то дышит."
+    ),
+    3: (
+        "📍 Нижний блок. Логово стаи. Вожак кровососов держит второй контур — "
+        "и он не собирается отдавать документы без боя."
+    ),
+}
+
+LAB_DEFS["limit4"] = {
+    "lab_id": "limit4",
+    "label": "Предел-4",
+    "location": "Темная долина",
+    "start_log": "Уровень 1: лестница сверху и тёмные комнаты. В красной комнате — учёные с ключ-картой.",
+    "start_intro": (
+        "🧪 «Предел-4»: закрытый комплекс в «Темной долине».\n"
+        "Ты появляешься сверху, у лестницы. Горят только коридоры — что в комнатах, "
+        "видно только когда зайдёшь внутрь.\n"
+        "Красная комната — учёные с ключ-картой, зелёная — документы, "
+        "в остальных — расходники и мутанты. Дверь внизу открывается ключ-картой."
+    ),
+    "note_author": "лабораторный архив «Предел-1»",
+    "note_level2_text": DOC_LIMIT4_1,
+    "note_final_text": DOC_LIMIT4_3,
+    "notes": {
+        "doc1": DOC_LIMIT4_1,
+        "doc2": DOC_LIMIT4_2,
+        "doc3": DOC_LIMIT4_3,
+    },
+    "level_intros": LEVEL_INTROS_LIMIT4,
+    "grid": LAB_GRID_SIZE,
+    "levels": {
+        # --- Уровень 1: лестница сверху, четыре комнаты, 5 мутантов, ключ-карта.
+        1: {
+            # Вход сверху (лестницы), выход — внизу.
+            "spawn": (4, 0),
+            "exit_door": (4, 8),
+            "door_lock": {"type": "key_item", "item": "keycard"},
+            "key_hint": "Дверь заперта. Нужна ключ-карта — она у учёных в красной комнате.",
+            "key_room": "left_hostile",
+            "keycard_log": "🗝 Учёные убиты — ты забрал ключ-карту из красной комнаты.",
+            # Пока красная комната не зачищена, остальные комнаты заперты.
+            "locked_rooms": {
+                "docs_room": "keycard",
+                "storage_room": "keycard",
+                "blue_room": "keycard",
+            },
+            "locked_room_hint": "🚪 Дверь заперта: сначала зачисти красную комнату с учёными.",
+            "rooms": {
+                # Красная зона — учёные с ключ-картой (их охраняют мутанты).
+                "left_hostile": "hostile",
+                # Зелёная зона — документы.
+                "docs_room": "loot",
+                # Оранжевая зона — склад расходников.
+                "storage_room": "loot",
+                # Синяя зона — пустая комната (арт убрали по просьбе).
+                "blue_room": "cleared",
+            },
+            "room_cells": {
+                "left_hostile": _room(1, 4, 1, 4),
+                "docs_room": _room(5, 8, 1, 4),
+                "storage_room": _room(1, 4, 5, 8),
+                "blue_room": _room(5, 8, 5, 8),
+            },
+            "walkable": (
+                _room(1, 4, 1, 4)
+                + _room(5, 8, 1, 4)
+                + _room(1, 4, 5, 8)
+                + _room(5, 8, 5, 8)
+                + [(4, y) for y in range(0, 9)]
+            ),
+            "loot_cells": {
+                "1,2": "medkit",
+                "2,3": "bread",
+                "3,2": "antirad",
+                "5,2": "antibiotic",
+                "6,3": "ammo_pack",
+                "1,6": "water_bottle",
+                "2,7": "stew",
+                "3,6": "ammo_pistol",
+                "5,6": "medkit",
+                "6,7": "ammo_rifle",
+                "7,6": "vodka",
+            },
+            # Документы проекта «Эволюция» — часть 1.
+            "note_cells": {"6,1": "doc1"},
+            "cover": [(1, 3), (7, 3)],
+            "fog": True,
+            "enemies": [
+                {"pos": (2, 2), "type": "mutant", "kind": "bloodsucker", "hp": 55, "damage_mult": 1.4},
+                {"pos": (1, 1), "type": "mutant", "kind": "zombie", "hp": 26, "damage_mult": 1.0},
+                {"pos": (3, 3), "type": "mutant", "kind": "blind_dog", "hp": 12, "damage_mult": 0.8},
+                {"pos": (4, 3), "type": "mutant", "kind": "zombie", "hp": 30, "damage_mult": 1.0},
+                {"pos": (4, 5), "type": "mutant", "kind": "bloodsucker", "hp": 50, "damage_mult": 1.3},
+            ],
+        },
+        # --- Уровень 2: архив с документами (часть 2) и тремя мутантами.
+        2: {
+            "spawn": (4, 0),
+            "exit_door": (4, 8),
+            "door_lock": {"type": "key_item", "item": "keycard"},
+            "rooms": {"archive_hall": "hostile"},
+            "room_cells": {"archive_hall": _room(1, 8, 1, 7)},
+            "walkable": _room(1, 8, 1, 7) + [(4, y) for y in range(0, 9)] + [(4, 8)],
+            "loot_cells": {
+                "1,2": "medkit_science",
+                "7,2": "ammo_pack",
+                "1,6": "antirad",
+                "7,6": "bread",
+            },
+            "note_cells": {"7,5": "doc2"},
+            "cover": [],
+            "fog": True,
+            "enemies": [
+                {"pos": (2, 3), "type": "mutant", "kind": "bloodsucker", "hp": 60, "damage_mult": 1.4},
+                {"pos": (6, 3), "type": "mutant", "kind": "zombie", "hp": 26, "damage_mult": 1.0},
+                {"pos": (4, 5), "type": "mutant", "kind": "zombie", "hp": 24, "damage_mult": 1.0},
+            ],
+        },
+        # --- Уровень 3: вожак кровососов и три кровососа из стаи.
+        3: {
+            "spawn": (4, 0),
+            "exit_door": (4, 8),
+            "door_lock": {"type": "boss_kill"},
+            "rooms": {"boss_hall": "hostile"},
+            "room_cells": {"boss_hall": _room(1, 8, 1, 6)},
+            "walkable": _room(1, 8, 1, 6) + [(4, y) for y in range(0, 9)],
+            "loot_cells": {
+                "1,1": "artifact_power",
+                "7,1": "artifact_vitality",
+                "1,5": "medkit_science",
+                "7,5": "ammo_rifle",
+                "2,2": "antirad",
+                "6,2": "antibiotic",
+            },
+            "note_cells": {"5,1": "doc3"},
+            "cover": [],
+            "fog": True,
+            "enemies": [
+                # Индекс 0 — вожак: его смерть открывает дверь (boss_killed).
+                {"pos": (4, 2), "type": "mutant", "kind": "bloodsucker", "hp": 280, "damage_mult": 1.9},
+                {"pos": (2, 4), "type": "mutant", "kind": "bloodsucker", "hp": 80, "damage_mult": 1.3},
+                {"pos": (7, 4), "type": "mutant", "kind": "bloodsucker", "hp": 80, "damage_mult": 1.3},
+                {"pos": (5, 5), "type": "mutant", "kind": "bloodsucker", "hp": 80, "damage_mult": 1.3},
+            ],
+        },
+    },
+    "ambush": {
+        "grid": LAB_AMBUSH_GRID_SIZE,
+        "spawn": (3, 6),
+        "intro": AMBUSH_INTRO_TEXT,
+        "count": 6,
+        "weapons": ("СВДм-2", "Гаусс-пушка"),
+        "armors": ("Костюм СЕВА", "Научный костюм"),
+        "enemy_build": {
+            "type": "npc",
+            "kind": "dark_stalker",
+            "hp": 40,
+            "damage_mult": 1.4,
+        },
+    },
+}
+
+
 def _lab_def(lab_id: str = "limit1") -> dict[str, Any]:
     return LAB_DEFS[lab_id]
 
@@ -864,6 +1147,33 @@ def _is_walkable(session: LabSession, cell: tuple[int, int]) -> bool:
     return cell in _level_walkable(session)
 
 
+def _locked_room_at(
+    session: LabSession, cfg: dict[str, Any], cell: tuple[int, int]
+) -> str | None:
+    """Ключ комнаты, в которую вход ещё закрыт условием locked_rooms.
+
+    cfg["locked_rooms"] = {"docs_room": "keycard", ...} — пока условие
+    (session.collected["keycard"], session.boss_killed) не выполнено, клетка
+    такой комнаты считается закрытой дверью.
+    """
+    locked = cfg.get("locked_rooms") or {}
+    if not locked:
+        return None
+    room_cells = cfg.get("room_cells") or {}
+    for room_key, condition in locked.items():
+        cells = {
+            (int(c[0]), int(c[1])) for c in (room_cells.get(str(room_key)) or [])
+        }
+        if cell not in cells:
+            continue
+        if str(condition) == "keycard" and session.collected.get("keycard"):
+            return None
+        if str(condition) == "boss_killed" and session.boss_killed:
+            return None
+        return str(room_key)
+    return None
+
+
 def _enemy_mult(session: LabSession, index: int) -> float:
     if index < len(session.enemy_damage_mults):
         return float(session.enemy_damage_mults[index])
@@ -900,7 +1210,8 @@ def _remove_enemy_at_index(session: LabSession, idx: int) -> str:
     if idx < len(session.enemy_damage_mults):
         session.enemy_damage_mults.pop(idx)
     # Босс третьего уровня: победа → дверь открывается сама (Предел-3: бюрер).
-    if kind in ("giant", "burer"):
+    # Первый враг в конфиге уровня 3 — всегда босс (в том числе вожак кровососов).
+    if kind in ("giant", "burer") or (int(session.level) == 3 and int(idx) == 0):
         session.boss_killed = True
     return _enemy_label(kind, npc=etype == "npc")
 
@@ -909,10 +1220,31 @@ def _update_triggers(storage: Storage, session: LabSession) -> None:
     """Флаги прогресса по зачистке (ключ-карта уровня 1)."""
     if session.stage != "combat":
         return
-    if session.level == 1 and not session.enemies and not session.collected.get("keycard"):
-        session.collected["keycard"] = True
-        session.rooms["left_hostile"] = "cleared"
-        session.log.append("🗝 Ты нашёл ключ-карту у усиленных бойцов Монолита.")
+    cfg = _lab_level_cfg(session.lab_id, session.level)
+    if session.level == 1 and not session.collected.get("keycard"):
+        key_room = str(cfg.get("key_room") or "")
+        if key_room:
+            # Ключ-карта лежит в конкретной комнате: достаточно зачистить её.
+            room_cells = {
+                (int(c[0]), int(c[1]))
+                for c in ((cfg.get("room_cells") or {}).get(key_room) or [])
+            }
+            room_cleared = not any(
+                (int(e[0]), int(e[1])) in room_cells for e in session.enemies
+            )
+        else:
+            room_cleared = not session.enemies
+        if room_cleared:
+            session.collected["keycard"] = True
+            cleared_room = key_room or "left_hostile"
+            if cleared_room in session.rooms:
+                session.rooms[cleared_room] = "cleared"
+            session.log.append(
+                str(
+                    cfg.get("keycard_log")
+                    or "🗝 Ты нашёл ключ-карту у усиленных бойцов Монолита."
+                )
+            )
     if session.level == 3 and session.boss_killed and not session.collected.get("boss_cleared"):
         session.collected["boss_cleared"] = True
         session.rooms["boss_hall"] = "cleared"
@@ -1341,16 +1673,22 @@ def start_lab(storage: Storage, telegram_id: int, lab_id: str = "limit1") -> Act
     session.hp[str(telegram_id)] = int(player.health)
     _load_level(session, telegram_id, 1, new_floor=False)
     session.log.append(
-        "Уровень 1: коридор и комнаты. В одной из комнат — усиленные бойцы Монолита с ключ-картой."
+        str(
+            lab_cfg.get("start_log")
+            or "Уровень 1: коридор и комнаты. В одной из комнат — усиленные бойцы Монолита с ключ-картой."
+        )
     )
     save_lab_session(storage, session)
     player = storage.get_character(telegram_id, refresh_energy=False) or player
     image = render_lab_for_player(storage, telegram_id, session, player)
-    level_intro = (
-        f"🧪 «{session.label}»: лаборатория в «{session.location}».\n"
-        "Уровень 1: коридор и комнаты. Зачисти комнату с усиленными бойцами Монолита — "
-        "у них ключ-карта (помечается сама, это не предмет). Открой дверь в конце коридора.\n"
-        "Зелёные отметки — лут, синяя рамка — дверь. Враги имеют HP — стреляй несколько раз."
+    level_intro = str(
+        lab_cfg.get("start_intro")
+        or (
+            f"🧪 «{session.label}»: лаборатория в «{session.location}».\n"
+            "Уровень 1: коридор и комнаты. Зачисти комнату с усиленными бойцами Монолита — "
+            "у них ключ-карта (помечается сама, это не предмет). Открой дверь в конце коридора.\n"
+            "Зелёные отметки — лут, синяя рамка — дверь. Враги имеют HP — стреляй несколько раз."
+        )
     )
     return ActionResult(
         True,
@@ -1392,6 +1730,7 @@ def lab_move(storage: Storage, telegram_id: int, direction: str) -> ActionResult
     if delta is None:
         return ActionResult(False, "Некорректное направление.")
     turn_seq = session.turn_seq
+    cfg = _lab_level_cfg(session.lab_id, session.level)
     pos = session.pos(telegram_id)
     nxt = (pos[0] + delta[0], pos[1] + delta[1])
     if not (0 <= nxt[0] < session.grid and 0 <= nxt[1] < session.grid):
@@ -1400,6 +1739,12 @@ def lab_move(storage: Storage, telegram_id: int, direction: str) -> ActionResult
         return _frame_result(session, telegram_id, "Клетка занята врагом — отстреливайся.")
     if not _is_walkable(session, nxt):
         return _frame_result(session, telegram_id, "Там стена.")
+    if session.stage == "combat" and _locked_room_at(session, cfg, nxt):
+        hint = str(
+            cfg.get("locked_room_hint")
+            or "Дверь заперта: сначала зачисти комнату с учёными."
+        )
+        return _frame_result(session, telegram_id, hint)
 
     player = storage.get_character(telegram_id, refresh_energy=False)
     session.set_pos(telegram_id, nxt)
@@ -1412,7 +1757,15 @@ def lab_move(storage: Storage, telegram_id: int, direction: str) -> ActionResult
             if manhattan_distance(nxt, e_pos) == 1 and int(session.enemy_hp[idx] or 0) > 0:
                 knife = max(3, int(round(weapon_damage("Нож"))))
                 session.enemy_hp[idx] = max(0, int(session.enemy_hp[idx]) - knife)
-                label = _enemy_label(session.enemy_kinds[idx] if idx < len(session.enemy_kinds) else "mutant")
+                kind = (
+                    session.enemy_kinds[idx] if idx < len(session.enemy_kinds) else "mutant"
+                )
+                etype = (
+                    session.enemy_types[idx]
+                    if idx < len(session.enemy_types)
+                    else "mutant"
+                )
+                label = _enemy_label(kind, npc=(etype == "npc"))
                 melee_note = f"🗡 Ближний бой: {label} —{knife} HP."
                 break
     hazard_cells = set((_lab_level_cfg(session.lab_id, 1).get("hazard_cells") or ())) if session.level == 1 else set()
@@ -1625,20 +1978,35 @@ def lab_interact(storage: Storage, telegram_id: int) -> ActionResult:
             },
         )
 
-    # Записка (уровень 2).
+    # Записка или документ: у лабы может быть несколько документов (notes).
     note_map = cfg.get("note_cells") or {}
     if cell_key in note_map and not session.collected.get(str(note_map[cell_key])):
         trigger = str(note_map[cell_key])
         session.collected[trigger] = True
+        note_author = str(lab_cfg.get("note_author") or "Бунзова")
         if trigger == "note_level2":
             note_text = str(lab_cfg.get("note_level2_text") or NOTE_LEVEL2_TEXT)
-            note_author = str(lab_cfg.get("note_author") or "Бунзова")
             session.log.append(f"📄 Ты прочитал записку {note_author}.")
             if not _save_turn(storage, session, turn_seq):
                 return ActionResult(False, STALE_TURN_MESSAGE)
             return ActionResult(
                 True,
                 "📄 Записка:\n" + note_text,
+                payload={
+                    "lab_active": True,
+                    "lab_stage": session.stage,
+                    "lab_note": note_text,
+                },
+            )
+        notes = lab_cfg.get("notes") or {}
+        note_text = str(notes.get(trigger) or "")
+        if note_text:
+            session.log.append(f"📄 Найден документ ({note_author}).")
+            if not _save_turn(storage, session, turn_seq):
+                return ActionResult(False, STALE_TURN_MESSAGE)
+            return ActionResult(
+                True,
+                "📄 Документ:\n" + note_text,
                 payload={
                     "lab_active": True,
                     "lab_stage": session.stage,
@@ -1663,11 +2031,11 @@ def _try_enter_door(storage: Storage, session: LabSession, turn_seq: int) -> Act
     if lock_type == "key_item":
         item = str(lock.get("item") or "keycard")
         if not session.collected.get(item):
-            return _frame_result(
-                session,
-                tid,
-                "Дверь заперта. Нужна ключ-карта — она у усиленных бойцов Монолита в комнате слева.",
+            key_hint = str(
+                cfg.get("key_hint")
+                or "Дверь заперта. Нужна ключ-карта — она у усиленных бойцов Монолита в комнате слева."
             )
+            return _frame_result(session, tid, key_hint)
     elif lock_type == "boss_kill":
         if not session.boss_killed:
             return _frame_result(

@@ -59,6 +59,11 @@ DUEL_COVER_HIT_CHANCE = COVER_HIT_CHANCE
 DUEL_WAVE_MUTANT_SPAWN = 3
 DUEL_WAVE_MUTANT_STEPS = 2
 DUEL_WAVE_MUTANT_MAX = 14
+# Прорыв: рывок на 2 клетки в выбранном направлении за энергию.
+DUEL_BREAKTHROUGH_CELLS = 2
+DUEL_BREAKTHROUGH_ENERGY = 5
+# Магазин: 3 выстрела, потом нужна перезарядка (тратит ход).
+DUEL_MAGAZINE_SIZE = 3
 
 DUEL_SESSION_PREFIX = "duel:grid:session:"
 DUEL_PLAYER_PREFIX = "duel:grid:player:"
@@ -110,6 +115,7 @@ class DuelGridSession:
     positions: dict[str, list[int]] = field(default_factory=dict)
     hp: dict[str, int] = field(default_factory=dict)
     medkits_used: dict[str, bool] = field(default_factory=dict)
+    magazines: dict[str, int] = field(default_factory=dict)
     turn_order: list[int] = field(default_factory=list)
     active_index: int = 0
     turn_seq: int = 0
@@ -149,6 +155,7 @@ class DuelGridSession:
             "positions": self.positions,
             "hp": self.hp,
             "medkits_used": self.medkits_used,
+            "magazines": self.magazines,
             "turn_order": self.turn_order,
             "active_index": self.active_index,
             "turn_seq": self.turn_seq,
@@ -175,6 +182,9 @@ class DuelGridSession:
             positions={str(k): list(v) for k, v in (raw.get("positions") or {}).items()},
             hp={str(k): int(v) for k, v in (raw.get("hp") or {}).items()},
             medkits_used={str(k): bool(v) for k, v in (raw.get("medkits_used") or {}).items()},
+            magazines={
+                str(k): int(v) for k, v in (raw.get("magazines") or {}).items()
+            },
             turn_order=[int(x) for x in (raw.get("turn_order") or [])],
             active_index=int(raw.get("active_index") or 0),
             turn_seq=int(raw.get("turn_seq") or 0),
@@ -341,6 +351,8 @@ def start_duel_grid(
     session.hp[str(target_id)] = int(target.health)
     session.medkits_used[str(challenger_id)] = False
     session.medkits_used[str(target_id)] = False
+    session.magazines[str(challenger_id)] = DUEL_MAGAZINE_SIZE
+    session.magazines[str(target_id)] = DUEL_MAGAZINE_SIZE
     session.log.append(
         f"Дуэль: {h(challenger.nickname)} vs {h(target.nickname)}. "
         f"Таймер боя {DUEL_MATCH_SECONDS // 60} мин. Укрытие = 50% промах."
@@ -353,6 +365,8 @@ def start_duel_grid(
         f"Дальность: пистолет/дробовик 1 · автомат 2 · снайперка 3 · гаус 4 клетки (90°).\n"
         f"Таймер боя: {DUEL_MATCH_SECONDS // 60} мин — потом волна мутантов.\n"
         f"Урон ≈ сила×2 ±2. Аптечка — 1 раз за бой.\n"
+        f"Магазин: {DUEL_MAGAZINE_SIZE} выстрела, потом перезарядка (ход).\n"
+        f"Прорыв: 2 клетки за {DUEL_BREAKTHROUGH_ENERGY} энергии.\n"
         f"Первый ход: {h(challenger.nickname)}."
     )
     return ActionResult(True, text, payload={"duel_id": duel_id}), session
@@ -630,6 +644,111 @@ def duel_move(storage: Storage, telegram_id: int, direction: str) -> ActionResul
     return ActionResult(True, "Сделал шаг.", payload={"duel_active": True, "duel_id": session.duel_id})
 
 
+def duel_breakthrough(storage: Storage, telegram_id: int, direction: str) -> ActionResult:
+    """Рывок на 2 клетки в выбранном направлении за энергию."""
+    session = get_duel_session_by_player(storage, telegram_id)
+    if session is None:
+        return ActionResult(False, "Активной дуэли нет.")
+    if session.active_player() != telegram_id:
+        return ActionResult(False, "Сейчас ход соперника.")
+    delta = MOVE_DELTAS.get(direction)
+    if delta is None:
+        return ActionResult(False, "Некорректное направление.")
+
+    player = storage.get_character(telegram_id, refresh_energy=False)
+    if player is None:
+        return ActionResult(False, "Персонаж не найден.")
+
+    pos = session.pos(telegram_id)
+    opp_pos = session.pos(session.opponent_of(telegram_id))
+    blocked = _occupied(session, exclude=telegram_id)
+    cover = set(session.cover)
+    path: list[tuple[int, int]] = []
+    for _ in range(DUEL_BREAKTHROUGH_CELLS):
+        nxt = (pos[0] + delta[0], pos[1] + delta[1])
+        if not (0 <= nxt[0] < session.grid and 0 <= nxt[1] < session.grid):
+            break
+        if nxt == opp_pos:
+            break
+        if nxt in blocked and nxt not in cover:
+            break
+        path.append(nxt)
+        pos = nxt
+    if not path:
+        return ActionResult(False, "Прорыв невозможен: путь перекрыт.")
+
+    if int(player.energy) < DUEL_BREAKTHROUGH_ENERGY:
+        return ActionResult(
+            False, f"Для прорыва нужно {DUEL_BREAKTHROUGH_ENERGY} энергии."
+        )
+    if not storage.spend_energy(telegram_id, DUEL_BREAKTHROUGH_ENERGY):
+        return ActionResult(
+            False, f"Для прорыва нужно {DUEL_BREAKTHROUGH_ENERGY} энергии."
+        )
+
+    turn_seq = session.turn_seq
+    session.set_pos(telegram_id, path[-1])
+    session.log.append(
+        f"{h(player.nickname)} прорывается на {len(path)} кл. "
+        f"(−{DUEL_BREAKTHROUGH_ENERGY} энергии)."
+    )
+    match_done = _check_match_timeout(storage, session, turn_seq)
+    if match_done:
+        if session.finished:
+            return match_done
+        if not _save_if_turn_ok(storage, session, turn_seq):
+            return ActionResult(False, STALE_TURN_MESSAGE)
+        return match_done
+    _advance_turn(session)
+    done = _after_turn_mutants(storage, session, turn_seq)
+    if done:
+        return done
+    if not _save_if_turn_ok(storage, session, turn_seq):
+        return ActionResult(False, STALE_TURN_MESSAGE)
+    return ActionResult(
+        True,
+        f"💨 Прорыв: {len(path)} кл. (−{DUEL_BREAKTHROUGH_ENERGY} энергии).",
+        payload={"duel_active": True, "duel_id": session.duel_id},
+    )
+
+
+def duel_reload(storage: Storage, telegram_id: int) -> ActionResult:
+    """Перезарядка магазина — тратит ход."""
+    session = get_duel_session_by_player(storage, telegram_id)
+    if session is None:
+        return ActionResult(False, "Активной дуэли нет.")
+    if session.active_player() != telegram_id:
+        return ActionResult(False, "Сейчас ход соперника.")
+    player = storage.get_character(telegram_id, refresh_energy=False)
+    if player is None:
+        return ActionResult(False, "Персонаж не найден.")
+    magazine = int(session.magazines.get(str(telegram_id), 0))
+    if magazine >= DUEL_MAGAZINE_SIZE:
+        return ActionResult(False, "Магазин уже полон — перезарядка не нужна.")
+
+    turn_seq = session.turn_seq
+    session.magazines[str(telegram_id)] = DUEL_MAGAZINE_SIZE
+    session.log.append(f"{h(player.nickname)} перезарядил оружие.")
+    match_done = _check_match_timeout(storage, session, turn_seq)
+    if match_done:
+        if session.finished:
+            return match_done
+        if not _save_if_turn_ok(storage, session, turn_seq):
+            return ActionResult(False, STALE_TURN_MESSAGE)
+        return match_done
+    _advance_turn(session)
+    done = _after_turn_mutants(storage, session, turn_seq)
+    if done:
+        return done
+    if not _save_if_turn_ok(storage, session, turn_seq):
+        return ActionResult(False, STALE_TURN_MESSAGE)
+    return ActionResult(
+        True,
+        f"🔁 Перезарядка: магазин полон ({DUEL_MAGAZINE_SIZE}).",
+        payload={"duel_active": True, "duel_id": session.duel_id},
+    )
+
+
 def duel_shoot(storage: Storage, telegram_id: int, direction: str) -> ActionResult:
     session = get_duel_session_by_player(storage, telegram_id)
     if session is None:
@@ -646,9 +765,13 @@ def duel_shoot(storage: Storage, telegram_id: int, direction: str) -> ActionResu
     rng = weapon_shoot_range(weapon)
     if rng <= 0:
         return ActionResult(False, "Это оружие не стреляет на дистанции.")
+    magazine = int(session.magazines.get(str(telegram_id), DUEL_MAGAZINE_SIZE))
+    if magazine <= 0:
+        return ActionResult(False, "Магазин пуст — нужна перезарядка (🔁).")
     ammo_result = consume_shot_ammo(storage, telegram_id, weapon)
     if ammo_result is not None:
         return ammo_result
+    session.magazines[str(telegram_id)] = magazine - 1
     origin = session.pos(telegram_id)
     cover_set = set(session.cover)
     targets = {session.pos(session.opponent_of(telegram_id)): "player"}

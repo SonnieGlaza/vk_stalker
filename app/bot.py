@@ -891,6 +891,9 @@ def _duel_fight_keyboard():
         [("⬅️", "duel:move:left"), ("⬇️", "duel:move:down"), ("➡️", "duel:move:right")],
         [("🔫 ⬆️", "duel:shoot:up")],
         [("🔫 ⬅️", "duel:shoot:left"), ("🔫 ⬇️", "duel:shoot:down"), ("🔫 ➡️", "duel:shoot:right")],
+        [("💨 ⬆️", "duel:break:up")],
+        [("💨 ⬅️", "duel:break:left"), ("💨 ⬇️", "duel:break:down"), ("💨 ➡️", "duel:break:right")],
+        [("🔁 Перезарядка", "duel:reload")],
         [("💊 Аптечка", "duel:medkit"), ("🏳 Сдаться", "duel:forfeit")],
         [("🔄 Обновить", "duel:refresh"), ("🚪 Выйти (сдача)", "duel:exit")],
     )
@@ -916,6 +919,17 @@ def _duel_caption(storage: Storage, session: Any) -> str:
     lines = ["⚔️ Тактическая дуэль", "", "Ход: " + active_name]
     for pid in order:
         lines.append(_hp_label(int(pid)))
+    from app.duel_grid import DUEL_MAGAZINE_SIZE
+
+    magazines = dict(getattr(session, "magazines", {}) or {})
+    if magazines:
+        ammo_parts = []
+        for pid in order:
+            ch = storage.get_character(int(pid), refresh_energy=False)
+            name = ch.nickname if ch is not None else f"id{pid}"
+            current = int(magazines.get(str(pid), 0))
+            ammo_parts.append(f"{name} {current}/{DUEL_MAGAZINE_SIZE}")
+        lines.append("🔫 " + " · ".join(ammo_parts))
     return "\n".join(lines)
 
 
@@ -1013,8 +1027,10 @@ async def _duel_notify_finished(bot: VkMessenger, storage: Storage, result: Any)
 async def _duel_apply(bot: VkMessenger, storage: Storage, event: VkEvent, action: str) -> None:
     """Применить ход и перерисовать кадр обоим, если дуэль продолжается."""
     from app.duel_grid import (
+        duel_breakthrough,
         duel_forfeit,
         duel_move,
+        duel_reload,
         duel_shoot,
         duel_use_medkit,
         get_duel_session_by_player,
@@ -1027,6 +1043,11 @@ async def _duel_apply(bot: VkMessenger, storage: Storage, event: VkEvent, action
     elif action == "shoot":
         direction = event.payload.split(":")[-1]
         result = duel_shoot(storage, me, direction)
+    elif action == "break":
+        direction = event.payload.split(":")[-1]
+        result = duel_breakthrough(storage, me, direction)
+    elif action == "reload":
+        result = duel_reload(storage, me)
     elif action == "medkit":
         result = duel_use_medkit(storage, me)
     elif action == "forfeit":
@@ -1063,6 +1084,10 @@ async def _duel_callback(bot: VkMessenger, storage: Storage, event: VkEvent, pay
         await _duel_apply(bot, storage, event, "shoot")
     elif cmd == "medkit":
         await _duel_apply(bot, storage, event, "medkit")
+    elif cmd == "break":
+        await _duel_apply(bot, storage, event, "break")
+    elif cmd == "reload":
+        await _duel_apply(bot, storage, event, "reload")
     elif cmd == "forfeit":
         await _duel_apply(bot, storage, event, "forfeit")
     elif cmd == "refresh":
@@ -6007,6 +6032,14 @@ async def _zone_tick(bot: VkMessenger) -> None:
                         logger.debug("owner rating notify failed (%s): %s", owner_id, exc)
             except Exception as exc:
                 logger.debug("owner rating tick failed: %s", exc)
+            try:
+                from app.simulated_players import process_simulated_daily_activity
+
+                sim_granted = process_simulated_daily_activity(storage)
+                if sim_granted:
+                    logger.info("Симулированные игроки: рейтинг за сутки %s", sim_granted)
+            except Exception as exc:
+                logger.debug("simulated players tick failed: %s", exc)
         # Оффлайн-выживание: голод/жажда/радиация умирает и авто-респавн (~раз в 5 мин).
         if tick % 5 == 0:
             try:

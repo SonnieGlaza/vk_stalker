@@ -5178,6 +5178,16 @@ def create_duel_challenge(
         return ActionResult(False, "Сначала создай персонажа через /start."), None
     if target is None:
         return ActionResult(False, "Игрок с таким telegram_id не найден."), None
+    from app.simulated_players import is_simulated_player
+
+    if is_simulated_player(target_id):
+        return (
+            ActionResult(
+                False,
+                f"{h(target.nickname)} сейчас не в настроении драться — попробуй позже.",
+            ),
+            None,
+        )
     if _is_dead(challenger):
         return ActionResult(False, _dead_block_text()), None
     if _is_dead(target):
@@ -10034,6 +10044,12 @@ def touch_player_activity(storage: Storage, telegram_id: int) -> None:
 
 def is_player_online(storage: Storage, telegram_id: int) -> bool:
     from datetime import datetime, timezone
+
+    from app.simulated_players import is_simulated_player, simulated_online_now
+
+    # Боты «заходят в игру» по своему расписанию, без записи в meta.
+    if is_simulated_player(telegram_id):
+        return simulated_online_now(int(telegram_id))
 
     raw = storage.get_meta(_player_last_active_key(telegram_id))
     if not raw:

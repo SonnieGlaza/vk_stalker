@@ -3124,10 +3124,21 @@ class Storage:
             conn.execute("DELETE FROM meta_kv WHERE key = ?", (key,))
         self.save_snapshot()
 
-    def list_player_ids(self) -> list[int]:
+    def list_player_ids(self, *, include_simulated: bool = False) -> list[int]:
+        """Все telegram_id персонажей.
+
+        По умолчанию без симулированных ботов: их нельзя будить уведомлениями,
+        рассылками и циклом выживания — сообщения им отправлять некуда.
+        """
         with self._connect() as conn:
             rows = conn.execute("SELECT telegram_id FROM characters").fetchall()
-        return [int(row["telegram_id"]) for row in rows]
+        ids = [int(row["telegram_id"]) for row in rows]
+        if include_simulated:
+            return ids
+        from app.simulated_players import simulated_ids
+
+        bots = simulated_ids()
+        return [telegram_id for telegram_id in ids if telegram_id not in bots]
 
     def total_stars_donated(self, telegram_id: int) -> int:
         with self._connect() as conn:
