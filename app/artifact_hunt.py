@@ -1002,6 +1002,20 @@ def drop_specks(
     return out
 
 
+#: Символы зон, которые рисуем одним цветом (по просьбе владельца):
+#: аномалия — белая, как обводка её зоны.
+SYMBOL_TINT_COLORS: dict[str, tuple[int, int, int]] = {
+    "anomaly": (240, 240, 240),
+}
+
+
+def tint_symbol(img: Image.Image, color: tuple[int, int, int]) -> Image.Image:
+    """Перекрасить символ в один цвет, сохранив его форму (альфу)."""
+    out = Image.new("RGBA", img.size, (*color, 0))
+    out.putalpha(img.getchannel("A"))
+    return out
+
+
 def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
     """Символ зоны без внешней рамки: у иконки отбрасывается только рамка по краям,
 
@@ -1015,6 +1029,10 @@ def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
     symbol.putalpha(symbol.getchannel("A").point(icon_alpha_curve))
     # Убираем мелкие обрывки рамки (полоски, точки), оставляя сам рисунок.
     symbol = drop_specks(symbol)
+    # Некоторым зонам задан свой цвет символа (аномалия — белая).
+    tint = SYMBOL_TINT_COLORS.get(str(kind))
+    if tint is not None:
+        symbol = tint_symbol(symbol, tint)
     # Окно рамки шире самого рисунка — подрезаем по факту, иначе символ встанет не по центру.
     tight = symbol.getchannel("A").point(lambda value: 255 if value > 8 else 0).getbbox()
     if tight is not None:

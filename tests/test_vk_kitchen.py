@@ -80,6 +80,36 @@ async def _click_cbs(st, m, flows):
         assert "Не понял" not in _merged(m.sent), f"callback {payload} -> Не понял"
 
 
+def test_main_menu_moved_sections(env):
+    """Барахолка и Задания убраны из главного меню, дуэль/арена/кооп — в «🪖 Рейдах»."""
+    import json
+
+    def labels(keyboard):
+        data = json.loads(keyboard.get_keyboard())
+        return [btn["action"]["label"] for row in data["buttons"] for btn in row]
+
+    st, m = env
+    main_labels = labels(bot._menu_keyboard())
+    raid_labels = labels(bot._raid_menu_keyboard())
+
+    for gone in ("🏦 Барахолка", "📋 Задания"):
+        assert gone not in main_labels, main_labels
+    for moved in ("⚔️ Дуэль", "⚔️ Арена", "👥 Кооп"):
+        assert moved not in main_labels, main_labels
+        assert moved in raid_labels, raid_labels
+    assert "🪖 Рейды" in main_labels
+
+    # Разделы не пропали: теми же кнопками (текстом) они по-прежнему открываются.
+    async def run():
+        for text in ("🏦 Барахолка", "📋 Задания", "⚔️ Дуэль", "⚔️ Арена", "👥 Кооп"):
+            m.sent.clear()
+            await bot._handle_message(m, st, _ev(text))
+            assert m.sent, f"раздел '{text}' молчит"
+            assert "Не понял" not in _merged(m.sent), f"раздел '{text}' -> Не понял"
+
+    _run(run())
+
+
 def test_menu_reply_buttons(env):
     st, m = env
     labels = [
