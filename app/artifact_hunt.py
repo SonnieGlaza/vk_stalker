@@ -4,6 +4,7 @@ import json
 import random
 from collections import deque
 from dataclasses import dataclass
+from collections import deque
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -814,40 +815,152 @@ def legend_icon_raw(kind: str) -> Image.Image | None:
     return img.copy()
 
 
-#: Доля иконки от центра, которую считаем самим символом.
-#: 0.54 — рамка «Метки легенд» (она идёт на 10–18% от края) в кадр не попадает,
-#: остаётся только сам символ (сундук, спираль, человечек…).
-LEGEND_SYMBOL_CROP = 0.54
-#: Для строки легенды кадр ещё плотнее: там иконка мелкая и остатки рамки заметны.
-LEGEND_ROW_SYMBOL_CROP = 0.44
+#: Плотность пикселей иконки: ниже MIN — фон-ореол (стираем), выше MAX — плотный рисунок.
+ICON_ALPHA_MIN = 130
+ICON_ALPHA_MAX = 200
 
 
-def legend_symbol_image(kind: str, size: int, *, crop_ratio: float | None = None) -> Image.Image | None:
-    """Символ зоны без внешней рамки — центральная часть иконки, вписанная в size×size.
+def icon_alpha_curve(value: int) -> int:
+    """Убрать фон-ореол иконки: ниже MIN — прозрачно, выше MAX — плотно, между — плавно."""
+    if value <= ICON_ALPHA_MIN:
+        return 0
+    if value >= ICON_ALPHA_MAX:
+        return 255
+    span = max(1, ICON_ALPHA_MAX - ICON_ALPHA_MIN)
+    return int((value - ICON_ALPHA_MIN) * 255 / span)
 
-    Нужен там, где рамку рисует сам код (квадратная обводка зоны): от обыска остаётся
-    только сундук, от аномалии — спираль и так далее. ``crop_ratio`` позволяет взять
-    более плотный кадр (в легенде он меньше, чтобы не попали остатки рамки).
+
+def symbol_bbox(
+    img: Image.Image,
+    threshold: int = ICON_ALPHA_MIN,
+) -> tuple[int, int, int, int] | None:
+    """Внутреннее окно рамки иконки — там, где лежит сам символ.
+
+    Идём от каждого края по многим строкам/столбцам: первая плотная полоса — это рамка,
+    где она заканчивается — там начинается рисунок. Берём медиану по сторонам, поэтому
+    неровная (нарисованная от руки) рамка не сбивает расчёт. Символ всегда лежит внутри
+    окна, так что обрезка его не задевает.
+    """
+    alpha = img.getchannel("A")
+    mask = alpha.point(lambda value: 255 if value > threshold else 0)
+    w, h = img.size
+    if w < 12 or h < 12:
+        return None
+    px = mask.load()
+
+    def first_run(values: list[bool]) -> int:
+        index = 0
+        total = len(values)
+        while index < total and not values[index]:
+            index += 1
+        while index < total and values[index]:
+            index += 1
+        return index
+
+    lefts: list[int] = []
+    rights: list[int] = []
+    tops: list[int] = []
+    bottoms: list[int] = []
+    step_y = max(1, h // 24)
+    step_x = max(1, w // 24)
+    for y in range(2, h - 2, step_y):
+        row = [px[x, y] > 0 for x in range(w)]
+        start = first_run(row)
+        if 0 < start < w:
+            lefts.append(start)
+        back = first_run(list(reversed(row)))
+        if 0 < back < w:
+            rights.append(w - back)
+    for x in range(2, w - 2, step_x):
+        col = [px[x, y] > 0 for y in range(h)]
+        start = first_run(col)
+        if 0 < start < h:
+            tops.append(start)
+        back = first_run(list(reversed(col)))
+        if 0 < back < h:
+            bottoms.append(h - back)
+    if not (lefts and rights and tops and bottoms):
+        return None
+
+    def median(values: list[int]) -> int:
+        ordered = sorted(values)
+        return ordered[len(ordered) // 2]
+
+    box = (median(lefts), median(tops), median(rights), median(bottoms))
+    # Чуть поджимаем окно внутрь: у рамки бывает фактура-брызги, заходящая внутрь.
+    pad = max(2, int(min(w, h) * 0.05))
+    box = (box[0] + pad, box[1] + pad, box[2] - pad, box[3] - pad)
+    if box[2] - box[0] < 8 or box[3] - box[1] < 8:
+        return None
+    return box
+
+
+def drop_icon_frame(img: Image.Image, threshold: int = ICON_ALPHA_MIN, depth: int = 16) -> Image.Image:
+    """Стереть только рамку иконки по краям, сам рисунок оставить целиком.
+
+    Идём от внешнего края плотных пикселей вглубь на ``depth`` шагов: рамка «Метки
+    легенд» тоньше этого, а символ (человечек, сундук, спираль) лежит глубже, поэтому
+    он остаётся необрезанным.
+    """
+    alpha = img.getchannel("A")
+    mask = alpha.point(lambda value: 255 if value > threshold else 0)
+    w, h = img.size
+    px = mask.load()
+    seeds: list[tuple[int, int]] = []
+    for y in range(h):
+        row = [x for x in range(w) if px[x, y] > 0]
+        if row:
+            seeds.append((row[0], y))
+            seeds.append((row[-1], y))
+    for x in range(w):
+        col = [y for y in range(h) if px[x, y] > 0]
+        if col:
+            seeds.append((x, col[0]))
+            seeds.append((x, col[-1]))
+    if not seeds:
+        return img
+    seen: dict[tuple[int, int], int] = {}
+    queue: deque[tuple[int, int]] = deque()
+    for point in seeds:
+        if point not in seen:
+            seen[point] = 0
+            queue.append(point)
+    while queue:
+        x, y = queue.popleft()
+        step = seen[(x, y)]
+        if step >= depth:
+            continue
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if 0 <= nx < w and 0 <= ny < h and px[nx, ny] > 0 and (nx, ny) not in seen:
+                seen[(nx, ny)] = step + 1
+                queue.append((nx, ny))
+    out = img.copy()
+    out_alpha = out.getchannel("A")
+    data = out_alpha.load()
+    for (x, y) in seen:
+        data[x, y] = 0
+    return out
+
+
+def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
+    """Символ зоны без внешней рамки: у иконки отбрасывается только рамка по краям,
+
+    сам рисунок (сундук, человечек, спираль) остаётся целиком и вписывается в size×size.
     """
     icon = legend_icon_raw(kind)
     if icon is None:
         return None
-    ratio = LEGEND_SYMBOL_CROP if crop_ratio is None else float(crop_ratio)
-    ratio = max(0.2, min(1.0, ratio))
-    src_w, src_h = icon.size
-    crop_w = max(8, int(src_w * ratio))
-    crop_h = max(8, int(src_h * ratio))
-    left = (src_w - crop_w) // 2
-    top = (src_h - crop_h) // 2
-    crop = icon.crop((left, top, left + crop_w, top + crop_h))
+    box = symbol_bbox(icon)
+    symbol = icon.crop(box) if box is not None else icon
+    symbol.putalpha(symbol.getchannel("A").point(icon_alpha_curve))
     side = max(1, int(size))
-    scale = min(side / crop.width, side / crop.height)
-    crop = crop.resize(
-        (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
+    scale = min(side / symbol.width, side / symbol.height)
+    symbol = symbol.resize(
+        (max(1, int(symbol.width * scale)), max(1, int(symbol.height * scale))),
         Image.Resampling.LANCZOS,
     )
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    canvas.paste(crop, ((side - crop.width) // 2, (side - crop.height) // 2), crop)
+    canvas.paste(symbol, ((side - symbol.width) // 2, (side - symbol.height) // 2), symbol)
     return canvas
 
 
@@ -1248,7 +1361,7 @@ def render_hunt_frame(
     for i, (kind, label) in enumerate(legend_entries):
         lx = legend_cols[0] if i % 2 == 0 else legend_cols[1]
         ly = legend_y + 16 + (i // 2) * 34
-        icon = legend_symbol_image(kind, 30, crop_ratio=LEGEND_ROW_SYMBOL_CROP)
+        icon = legend_symbol_image(kind, 30)
         if icon is not None:
             canvas.paste(icon, (lx, ly), icon)
             draw.text((lx + 34, ly + 6), label, fill=(210, 210, 210), font=legend_font)

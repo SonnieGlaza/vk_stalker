@@ -17,7 +17,6 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from app.artifact_hunt import (
-    LEGEND_ROW_SYMBOL_CROP,
     _character_rating_points,
     _cover_crop,
     _draw_cell,
@@ -79,9 +78,6 @@ _LEGEND_ROW_HEIGHT = 40
 
 # Иконка зоны: берём её целиком (рамка + символ по центру), фон убираем.
 # Пиксели с альфой ниже MIN становятся полностью прозрачными (это тёмный ореол-фон),
-# выше MAX — плотными, между ними — плавный переход (чтобы края рамки не рвались).
-ZONE_ICON_ALPHA_MIN = 130
-ZONE_ICON_ALPHA_MAX = 200
 # Лёгкая цветовая подсветка самой зоны (фон под символом не заливаем).
 ZONE_FILL_ALPHA = 46
 # Какую долю меньшей стороны зоны занимает символ в её центре.
@@ -98,7 +94,7 @@ def _legend_row(
     font: Any,
 ) -> int:
     """Одна строка легенды: иконка из «Метки легенд» или цветная точка. Возвращает новую y."""
-    icon = legend_symbol_image(kind, _LEGEND_ICON_SIZE, crop_ratio=LEGEND_ROW_SYMBOL_CROP)
+    icon = legend_symbol_image(kind, _LEGEND_ICON_SIZE)
     if icon is not None:
         canvas.paste(icon, (pl + 20, entry_y), icon)
         label_x = pl + 20 + _LEGEND_ICON_SIZE + 10
@@ -538,16 +534,6 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: Any, max_width: int) -
     return f"{text}…" if text else text
 
 
-def _icon_alpha_curve(value: int) -> int:
-    """Убрать фон-ореол иконки: ниже MIN — прозрачно, выше MAX — плотно, между — плавно."""
-    if value <= ZONE_ICON_ALPHA_MIN:
-        return 0
-    if value >= ZONE_ICON_ALPHA_MAX:
-        return 255
-    span = max(1, ZONE_ICON_ALPHA_MAX - ZONE_ICON_ALPHA_MIN)
-    return int((value - ZONE_ICON_ALPHA_MIN) * 255 / span)
-
-
 def _zone_icon_tile(kind: str, width: int, height: int) -> Image.Image | None:
     """Плитка зоны: символ легенды по центру, без внешней рамки и без фона.
 
@@ -558,7 +544,6 @@ def _zone_icon_tile(kind: str, width: int, height: int) -> Image.Image | None:
     symbol = legend_symbol_image(kind, side)
     if symbol is None:
         return None
-    symbol.putalpha(symbol.getchannel("A").point(_icon_alpha_curve))
     tile = Image.new("RGBA", (max(1, width), max(1, height)), (0, 0, 0, 0))
     tile.paste(symbol, ((width - symbol.width) // 2, (height - symbol.height) // 2), symbol)
     return tile
