@@ -1210,11 +1210,11 @@ def render_hunt_frame(
     legend_cols = (pl + 16, pl + 140)
     for i, (kind, label) in enumerate(legend_entries):
         lx = legend_cols[0] if i % 2 == 0 else legend_cols[1]
-        ly = legend_y + 16 + (i // 2) * 30
-        icon = legend_icon_for(kind, size=24)
+        ly = legend_y + 16 + (i // 2) * 34
+        icon = legend_icon_for(kind, size=30)
         if icon is not None:
             canvas.paste(icon, (lx, ly), icon)
-            draw.text((lx + 28, ly + 4), label, fill=(210, 210, 210), font=legend_font)
+            draw.text((lx + 34, ly + 6), label, fill=(210, 210, 210), font=legend_font)
         else:
             draw.ellipse((lx + 3, ly + 6, lx + 17, ly + 20), fill=(150, 150, 150), outline=(90, 90, 90))
             draw.text((lx + 20, ly + 4), label, fill=(210, 210, 210), font=legend_font)

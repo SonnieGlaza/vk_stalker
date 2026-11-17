@@ -74,8 +74,8 @@ ZONE_LEGEND_LABELS: dict[str, str] = {
 _BASE_ZONE: dict[str, str] = {"id": "base", "kind": "base", "label": "База группировки"}
 _SECRET_ZONE: dict[str, str] = {"id": "secrettrader", "kind": "secrettrader", "label": "Бунс"}
 
-_LEGEND_ICON_SIZE = 30
-_LEGEND_ROW_HEIGHT = 34
+_LEGEND_ICON_SIZE = 36
+_LEGEND_ROW_HEIGHT = 40
 
 
 def _legend_row(
