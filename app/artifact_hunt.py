@@ -953,14 +953,33 @@ def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
     box = symbol_bbox(icon)
     symbol = icon.crop(box) if box is not None else icon
     symbol.putalpha(symbol.getchannel("A").point(icon_alpha_curve))
+    # Окно рамки шире самого рисунка — подрезаем по факту, иначе символ встанет не по центру.
+    tight = symbol.getchannel("A").point(lambda value: 255 if value > 8 else 0).getbbox()
+    if tight is not None:
+        symbol = symbol.crop(tight)
     side = max(1, int(size))
     scale = min(side / symbol.width, side / symbol.height)
     symbol = symbol.resize(
         (max(1, int(symbol.width * scale)), max(1, int(symbol.height * scale))),
         Image.Resampling.LANCZOS,
     )
+    # Центрируем по факту содержимого: у рисунка бывает неравномерный запас по краям.
+    tight = symbol.getchannel("A").point(lambda value: 255 if value > 8 else 0).getbbox()
+    if tight is not None:
+        symbol = symbol.crop(tight)
     canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
     canvas.paste(symbol, ((side - symbol.width) // 2, (side - symbol.height) // 2), symbol)
+    # Финальное выравнивание: ставим по центру именно рисунок, а не его рамку-запас.
+    content = canvas.getchannel("A").point(lambda value: 255 if value > 8 else 0).getbbox()
+    if content is not None:
+        cropped = canvas.crop(content)
+        centered = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        centered.paste(
+            cropped,
+            ((side - cropped.width) // 2, (side - cropped.height) // 2),
+            cropped,
+        )
+        canvas = centered
     return canvas
 
 
