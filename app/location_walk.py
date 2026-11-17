@@ -77,14 +77,13 @@ _SECRET_ZONE: dict[str, str] = {"id": "secrettrader", "kind": "secrettrader", "l
 _LEGEND_ICON_SIZE = 36
 _LEGEND_ROW_HEIGHT = 40
 
-# Плотность иконки зоны на карте: в «Метки легенд» рисунок полупрозрачный
-# (средняя альфа 60–100 из 255), из-за чего зона выглядела бледным пятном.
-ZONE_ICON_ALPHA_BOOST = 1.7
-# Плотность цветовой заливки зоны (лёгкая подсветка; фон под символом не заливаем).
+# Иконка зоны: берём её целиком (рамка + символ по центру), фон убираем.
+# Пиксели с альфой ниже MIN становятся полностью прозрачными (это тёмный ореол-фон),
+# выше MAX — плотными, между ними — плавный переход (чтобы края рамки не рвались).
+ZONE_ICON_ALPHA_MIN = 130
+ZONE_ICON_ALPHA_MAX = 200
+# Лёгкая цветовая подсветка самой зоны (фон под символом не заливаем).
 ZONE_FILL_ALPHA = 46
-# Какую часть иконки (от центра) растягиваем на зону: внешняя рамка «Метки легенд»
-# обрезается, чтобы сам символ (человечек/ящик/спираль) заполнил всю зону.
-ZONE_ICON_CROP = 0.6
 
 
 def _legend_row(
@@ -537,30 +536,29 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, font: Any, max_width: int) -
     return f"{text}…" if text else text
 
 
+def _icon_alpha_curve(value: int) -> int:
+    """Убрать фон-ореол иконки: ниже MIN — прозрачно, выше MAX — плотно, между — плавно."""
+    if value <= ZONE_ICON_ALPHA_MIN:
+        return 0
+    if value >= ZONE_ICON_ALPHA_MAX:
+        return 255
+    span = max(1, ZONE_ICON_ALPHA_MAX - ZONE_ICON_ALPHA_MIN)
+    return int((value - ZONE_ICON_ALPHA_MIN) * 255 / span)
+
+
 def _zone_icon_tile(
     icon: Image.Image,
     width: int,
     height: int,
     fallback_color: tuple[int, int, int],
 ) -> Image.Image:
-    """Плитка зоны: центральная часть иконки, растянутая на всю зону, без фона.
+    """Плитка зоны: иконка целиком (рамка + символ по центру), растянутая на всю зону.
 
-    1) берём центр иконки (внешняя рамка «Метки легенд» не нужна — зона и так обведена);
-    2) растягиваем на весь прямоугольник зоны;
-    3) поднимаем плотность самого рисунка. Прозрачные участки остаются прозрачными —
-       фон под символом не заливаем.
+    Фон иконки (полупрозрачный тёмный ореол) убирается по альфе — остаются только
+    обводка и символ, сквозь них видна карта.
     """
-    src_w, src_h = icon.size
-    crop_w = max(8, int(src_w * ZONE_ICON_CROP))
-    crop_h = max(8, int(src_h * ZONE_ICON_CROP))
-    left = (src_w - crop_w) // 2
-    top = (src_h - crop_h) // 2
-    tile = icon.crop((left, top, left + crop_w, top + crop_h))
-    tile = tile.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
-    alpha = tile.getchannel("A").point(
-        lambda value: 0 if value < 8 else min(255, int(value * ZONE_ICON_ALPHA_BOOST))
-    )
-    tile.putalpha(alpha)
+    tile = icon.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
+    tile.putalpha(tile.getchannel("A").point(_icon_alpha_curve))
     return tile
 
 
