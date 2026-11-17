@@ -814,6 +814,36 @@ def legend_icon_raw(kind: str) -> Image.Image | None:
     return img.copy()
 
 
+#: Доля иконки от центра, которую считаем самим символом: внешняя рамка отбрасывается.
+LEGEND_SYMBOL_CROP = 0.6
+
+
+def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
+    """Символ зоны без внешней рамки — центральная часть иконки, вписанная в size×size.
+
+    Нужен там, где рамку рисует сам код (квадратная обводка зоны): от обыска остаётся
+    только сундук, от аномалии — спираль и так далее.
+    """
+    icon = legend_icon_raw(kind)
+    if icon is None:
+        return None
+    src_w, src_h = icon.size
+    crop_w = max(8, int(src_w * LEGEND_SYMBOL_CROP))
+    crop_h = max(8, int(src_h * LEGEND_SYMBOL_CROP))
+    left = (src_w - crop_w) // 2
+    top = (src_h - crop_h) // 2
+    crop = icon.crop((left, top, left + crop_w, top + crop_h))
+    side = max(1, int(size))
+    scale = min(side / crop.width, side / crop.height)
+    crop = crop.resize(
+        (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
+        Image.Resampling.LANCZOS,
+    )
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.paste(crop, ((side - crop.width) // 2, (side - crop.height) // 2), crop)
+    return canvas
+
+
 def _load_hunt_field_background(location: str) -> Image.Image | None:
     """Фон поля охоты/схрона/осмотра локации: карта из assets/maps."""
     return _load_hunt_map(location)
@@ -1211,7 +1241,7 @@ def render_hunt_frame(
     for i, (kind, label) in enumerate(legend_entries):
         lx = legend_cols[0] if i % 2 == 0 else legend_cols[1]
         ly = legend_y + 16 + (i // 2) * 34
-        icon = legend_icon_for(kind, size=30)
+        icon = legend_symbol_image(kind, 30)
         if icon is not None:
             canvas.paste(icon, (lx, ly), icon)
             draw.text((lx + 34, ly + 6), label, fill=(210, 210, 210), font=legend_font)

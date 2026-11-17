@@ -27,8 +27,7 @@ from app.artifact_hunt import (
     _paste_circle,
     _paste_rounded,
     _player_grid_token,
-    legend_icon_for,
-    legend_icon_raw,
+    legend_symbol_image,
 )
 from app.location_zones import location_zones_for
 from app.storage import Character, Storage
@@ -84,6 +83,8 @@ ZONE_ICON_ALPHA_MIN = 130
 ZONE_ICON_ALPHA_MAX = 200
 # Лёгкая цветовая подсветка самой зоны (фон под символом не заливаем).
 ZONE_FILL_ALPHA = 46
+# Какую долю меньшей стороны зоны занимает символ в её центре.
+ZONE_SYMBOL_FILL = 0.8
 
 
 def _legend_row(
@@ -96,7 +97,7 @@ def _legend_row(
     font: Any,
 ) -> int:
     """Одна строка легенды: иконка из «Метки легенд» или цветная точка. Возвращает новую y."""
-    icon = legend_icon_for(kind, size=_LEGEND_ICON_SIZE)
+    icon = legend_symbol_image(kind, _LEGEND_ICON_SIZE)
     if icon is not None:
         canvas.paste(icon, (pl + 20, entry_y), icon)
         label_x = pl + 20 + _LEGEND_ICON_SIZE + 10
@@ -546,19 +547,19 @@ def _icon_alpha_curve(value: int) -> int:
     return int((value - ZONE_ICON_ALPHA_MIN) * 255 / span)
 
 
-def _zone_icon_tile(
-    icon: Image.Image,
-    width: int,
-    height: int,
-    fallback_color: tuple[int, int, int],
-) -> Image.Image:
-    """Плитка зоны: иконка целиком (рамка + символ по центру), растянутая на всю зону.
+def _zone_icon_tile(kind: str, width: int, height: int) -> Image.Image | None:
+    """Плитка зоны: символ легенды по центру, без внешней рамки и без фона.
 
-    Фон иконки (полупрозрачный тёмный ореол) убирается по альфе — остаются только
-    обводка и символ, сквозь них видна карта.
+    Рамку рисует сам код — квадратной обводкой всей зоны, поэтому от иконки нужен
+    только сам символ (от обыска — сундук, от аномалии — спираль).
     """
-    tile = icon.resize((max(1, width), max(1, height)), Image.Resampling.LANCZOS)
-    tile.putalpha(tile.getchannel("A").point(_icon_alpha_curve))
+    side = max(8, int(min(width, height) * ZONE_SYMBOL_FILL))
+    symbol = legend_symbol_image(kind, side)
+    if symbol is None:
+        return None
+    symbol.putalpha(symbol.getchannel("A").point(_icon_alpha_curve))
+    tile = Image.new("RGBA", (max(1, width), max(1, height)), (0, 0, 0, 0))
+    tile.paste(symbol, ((width - symbol.width) // 2, (height - symbol.height) // 2), symbol)
     return tile
 
 
@@ -573,30 +574,22 @@ def _draw_zone(
     left, top, right, bottom = box
     w = max(1, right - left)
     h = max(1, bottom - top)
-    radius = max(4, min(cell // 3, min(w, h) // 2))
 
     # 1) Заливка прямоугольника зоны цветом зоны: для зон без иконки (торговец, лесник,
-    #    Бунс) это и есть метка, для остальных — подложка под плитку.
+    #    Бунс) это и есть метка, для остальных — подложка под символ.
     overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(overlay).rounded_rectangle(
+    ImageDraw.Draw(overlay).rectangle(
         (left, top, right, bottom),
-        radius=radius,
         fill=(*color, ZONE_FILL_ALPHA),
     )
     canvas.alpha_composite(overlay)
 
-    # 2) Иконка зоны из «Метки легенд»: центральная часть рисунка растягивается на весь
-    #    прямоугольник зоны (одна клетка — 44×44, зона 2×2 — 88×88) и делается сплошной,
-    #    чтобы квадрат зоны был заполнен изображением целиком.
-    icon = legend_icon_raw(kind)
-    if icon is not None:
-        box_w = max(1, right - left + 1)
-        box_h = max(1, bottom - top + 1)
-        # Плитка без фона: кладём с её прозрачностью, карта видна вокруг символа.
-        tile = _zone_icon_tile(icon, box_w, box_h, color)
+    # 2) Символ зоны из «Метки легенд» — по центру плитки, без рамки и без фона.
+    tile = _zone_icon_tile(kind, max(1, right - left + 1), max(1, bottom - top + 1))
+    if tile is not None:
         canvas.paste(tile, (left, top), tile)
 
-    # 3) Обводка зоны — поверх плитки, иначе её не видно на сплошном квадрате.
+    # 3) Обводка зоны — квадрат без скруглений, поверх символа.
     draw = ImageDraw.Draw(canvas)
     if kind == "base":
         rainbow = (
@@ -623,9 +616,8 @@ def _draw_zone(
                     a, b, c, d = (left, bottom - f1 * h, left + 8, bottom - f0 * h)
                 draw.rectangle((a, b, c, d), fill=arc_color)
     else:
-        draw.rounded_rectangle(
+        draw.rectangle(
             box,
-            radius=radius,
             outline=color,
             width=5,
         )
