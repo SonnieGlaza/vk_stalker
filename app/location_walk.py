@@ -54,7 +54,7 @@ ZONE_COLORS: dict[str, tuple[int, int, int]] = {
     "secrettrader": (255, 170, 90),
     "bazaar": (255, 190, 80),
     "trade": (80, 170, 255),
-    "lair": (150, 100, 60),
+    "lair": (220, 60, 60),
     "forester": (90, 160, 90),
 }
 
