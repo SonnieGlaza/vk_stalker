@@ -232,12 +232,14 @@ async def _profile(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
             rating_points=rating,
             storage=storage,
         )
-        await bot.send_photo(
-            event.peer_id,
+        await _send_frame(
+            bot,
+            storage,
+            int(event.peer_id),
             card_png,
             caption=text,
             reply_markup=kb,
-            fallback_text=text,
+            kind="profile",
         )
     except Exception as exc:
         logger.warning("profile card render failed: %s", exc)
@@ -509,6 +511,112 @@ async def _inventory(bot: VkMessenger, storage: Storage, event: VkEvent) -> None
 
 
 # ---------------------------------------------------------------------------
+# Кадры и уведомления: старые сообщения бота удаляются (меньше спама)
+# ---------------------------------------------------------------------------
+
+
+async def _send_frame(
+    bot: VkMessenger,
+    storage: Storage,
+    chat_id: int,
+    image: Any,
+    *,
+    caption: str,
+    reply_markup: Any = None,
+    kind: str,
+) -> None:
+    """Отправить кадр активности: предыдущий кадр этого вида удаляется.
+
+    В чате у игрока живёт только последний кадр вида (прогулка/бой/охота/…),
+    а сам кадр уйдёт по TTL, если игрок его не заменит (``app.ephemeral_messages``).
+    """
+    from app.ephemeral_messages import drop_current_message, remember_frame_message
+
+    chat_id = int(chat_id)
+    await drop_current_message(bot, storage, chat_id, kind)
+    message_id = await bot.send_photo(chat_id, image, caption=caption, reply_markup=reply_markup)
+    remember_frame_message(storage, chat_id, kind, int(message_id or 0))
+
+
+async def _send_notice(
+    bot: VkMessenger,
+    storage: Storage,
+    chat_id: int,
+    text: str,
+    *,
+    reply_markup: Any = None,
+    kind: str = "notice",
+    ttl_seconds: int | None = None,
+) -> int | None:
+    """Отправить уведомление и запланировать его удаление (старые письма не копятся)."""
+    from app.ephemeral_messages import NOTICE_TTL_SECONDS, schedule_message_deletion
+
+    message_id = await bot.send_message(int(chat_id), text, reply_markup=reply_markup)
+    if message_id:
+        schedule_message_deletion(
+            storage,
+            int(chat_id),
+            int(message_id),
+            ttl_seconds=int(ttl_seconds or NOTICE_TTL_SECONDS),
+            kind=kind,
+        )
+    return message_id
+
+
+async def _send_ephemeral_text(
+    bot: VkMessenger,
+    storage: Storage,
+    chat_id: int,
+    text: str,
+    *,
+    kind: str,
+    reply_markup: Any = None,
+) -> None:
+    """Текст-«ход» боя: заменяет предыдущий такой же текст и уходит по TTL.
+
+    В чате остаётся только последний ход (старые — удаляются), чтобы длинные
+    бои не засыпали игрока десятками сообщений.
+    """
+    from app.ephemeral_messages import drop_current_message, remember_frame_message
+
+    chat_id = int(chat_id)
+    await drop_current_message(bot, storage, chat_id, kind)
+    message_id = await bot.send_message(chat_id, text, reply_markup=reply_markup)
+    remember_frame_message(storage, chat_id, kind, int(message_id or 0))
+
+
+async def _broadcast_notice(
+    bot: VkMessenger,
+    storage: Storage,
+    text: str,
+    *,
+    ids: Any = None,
+    kind: str = "event",
+    ttl_seconds: int | None = None,
+) -> int:
+    """Разослать уведомление и запланировать удаление всех копий (одна запись в очередь)."""
+    from app.ephemeral_messages import NOTICE_TTL_SECONDS, schedule_messages_deletion
+
+    targets = list(ids) if ids is not None else storage.list_player_ids()
+    delivered: list[tuple[int, int]] = []
+    for raw in targets:
+        try:
+            message_id = await bot.send_message(int(raw), text)
+            if message_id:
+                delivered.append((int(raw), int(message_id)))
+            await asyncio.sleep(0.05)  # анти-флуд VK при массовой рассылке
+        except Exception as exc:
+            logger.debug("broadcast notify failed (%s): %s", raw, exc)
+    schedule_messages_deletion(
+        storage,
+        delivered,
+        ttl_seconds=int(ttl_seconds or NOTICE_TTL_SECONDS),
+        kind=kind,
+    )
+    return len(delivered)
+
+
+# ---------------------------------------------------------------------------
 # Вылазка (сетка локации, app.location_walk)
 # ---------------------------------------------------------------------------
 
@@ -588,22 +696,20 @@ async def _walk_render(bot: VkMessenger, storage: Storage, event: VkEvent, playe
         zone_actions = _walk_zone_action_rows(storage, player)
         if zone_actions:
             rows.extend(zone_actions)
-        fallback_text = (
-            f"📍 Локация: {player.location}\n\n"
-            "Картинка временно не загрузилась — стрелки ходят по локации, кнопки зоны работают."
-        )
-        await bot.send_photo(
-            event.peer_id,
+        await _send_frame(
+            bot,
+            storage,
+            int(event.peer_id),
             frame,
             caption=caption,
             reply_markup=inline_keyboard(*(rows + _walk_keyboard_rows())),
-            fallback_text=fallback_text,
+            kind="walk",
         )
     except Exception as exc:
         logger.warning("walk render failed: %s", exc, exc_info=True)
         await bot.send_message(
             event.peer_id,
-            f"🌲 {getattr(player, 'location', '?')} — карта локации временно недоступна.\n"
+            f"🌲 {getattr(player, 'location', '?')} — кадр локации не отрисовался (подробности в логе).\n"
             "Пока можно пользоваться переходами, поиском артов и схроном:",
             reply_markup=inline_keyboard(
                 [("🗺 Переходы", "travel:open"), ("📡 Поиск артов", "hunt:open")],
@@ -690,10 +796,13 @@ def _shop_sell_price(key: str) -> int:
 
 
 async def _trader_menu(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
-    """Корневое меню торговца (reply-клавиатура)."""
+    """Корневое меню торговца (reply-клавиатура).
+
+    «🔧 Ремонт» убран из меню торговца (ремонт — у 🛠 Техника),
+    «⚙️ Экипировка» — убрана (она живёт в 🎒 Инвентаре).
+    """
     keyboard = reply_keyboard(
         ["🛒 Купить", "💰 Продать"],
-        ["🔧 Ремонт", "⚙️ Экипировка"],
         ["🛠 Техник", "🧑‍⚕️ Медик"],
         ["⬅️ В меню"],
     )
@@ -761,10 +870,11 @@ async def _trader_sell_item(bot: VkMessenger, storage: Storage, event: VkEvent, 
 
 
 async def _trader_repair(bot: VkMessenger, storage: Storage, event: VkEvent) -> None:
+    """Ремонт (доступен у 🛠 Техника; в меню торговца кнопки больше нет)."""
     keyboard = inline_keyboard(
         [("🔫 Оружие", "trade:repair:weapon"), ("🦺 Броня", "trade:repair:armor")],
         [("🚛 Грузовик", "trade:repair:truck"), ("🚙 Нива", "trade:repair:niva")],
-        [("⬅️ Назад", "trade:root")],
+        [("⬅️ Назад", "trade:tech")],
     )
     await bot.send_message(event.peer_id, "🔧 Что чиним?", reply_markup=keyboard)
 
@@ -791,7 +901,7 @@ async def _trader_equip(bot: VkMessenger, storage: Storage, event: VkEvent) -> N
     ]
     if player is not None and has_any_equipped_artifact(player):
         rows.append([("⛔ Снять артефакт", "trade:uneqart")])
-    rows.append([("⬅️ Назад", "trade:root")])
+    rows.append([("⬅️ В инвентарь", "inventory:root")])
     await bot.send_message(event.peer_id, "⚙️ Экипировка:", reply_markup=inline_keyboard(*rows))
 
 
@@ -809,9 +919,9 @@ async def _trader_equip_list(bot: VkMessenger, storage: Storage, event: VkEvent,
         options = list_equippable_armor(player)
     rows = [[(f"{title} ×{amount}", f"trade:eqitem:{slot}:{key}")] for key, title, amount in options[:18]]
     if not rows:
-        await bot.send_message(event.peer_id, "Экипировать нечего (купи сначала).", reply_markup=inline_keyboard([("⬅️ Назад", "trade:equip")]))
+        await bot.send_message(int(event.peer_id), "Экипировать нечего (купи сначала).", reply_markup=inline_keyboard([("⬅️ В инвентарь", "inventory:root")]))
         return
-    rows.append([("⬅️ Назад", "trade:equip")])
+    rows.append([("⬅️ В инвентарь", "inventory:root")])
     label = {"weapon": "оружие", "armor": "броня", "artifact": "артефакт"}.get(slot, slot)
     await bot.send_message(event.peer_id, f"⚙️ Твои {label}:", reply_markup=inline_keyboard(*rows))
 
@@ -825,7 +935,7 @@ async def _trader_equip_item(bot: VkMessenger, storage: Storage, event: VkEvent,
         result = equip_artifact(storage, int(event.user_id), key)
     else:
         result = equip_armor(storage, int(event.user_id), key)
-    await bot.send_message(event.peer_id, result.text, reply_markup=inline_keyboard([("⬅️ Назад", "trade:equip")]))
+    await bot.send_message(event.peer_id, result.text, reply_markup=inline_keyboard([("⬅️ К экипировке", "trade:equip")]))
 
 
 async def _trader_callback(bot: VkMessenger, storage: Storage, event: VkEvent, payload: str) -> None:
@@ -994,13 +1104,13 @@ async def _duel_send_frames(bot: VkMessenger, storage: Storage, session: Any, a_
     kb = _duel_fight_keyboard()
     try:
         png_a = render_duel_frame(storage, session, a_id)
-        await bot.send_photo(a_id, png_a, caption=caption, reply_markup=kb, fallback_text=caption)
+        await _send_frame(bot, storage, a_id, png_a, caption=caption, reply_markup=kb, kind="duel")
     except Exception as exc:
         logger.warning("duel frame a failed: %s", exc)
         await bot.send_message(a_id, caption, reply_markup=kb)
     try:
         png_b = render_duel_frame(storage, session, b_id)
-        await bot.send_photo(b_id, png_b, caption=caption, reply_markup=kb, fallback_text=caption)
+        await _send_frame(bot, storage, b_id, png_b, caption=caption, reply_markup=kb, kind="duel")
     except Exception as exc:
         logger.warning("duel frame b failed: %s", exc)
         await bot.send_message(b_id, caption, reply_markup=kb)
@@ -1019,7 +1129,9 @@ async def _duel_notify_finished(bot: VkMessenger, storage: Storage, result: Any)
             continue
         text = str(payload.get(key) or fallback)
         try:
-            await bot.send_message(pid, text, reply_markup=_menu_keyboard())
+            await _send_notice(
+                bot, storage, pid, text, reply_markup=_menu_keyboard(), kind="battle"
+            )
         except Exception as exc:
             logger.warning("duel result notify failed (%s): %s", pid, exc)
 
@@ -1060,7 +1172,9 @@ async def _duel_apply(bot: VkMessenger, storage: Storage, event: VkEvent, action
         if finished:
             await _duel_notify_finished(bot, storage, result)
         else:
-            await bot.send_message(event.peer_id, result.text)
+            await _send_ephemeral_text(
+                bot, storage, int(event.peer_id), result.text, kind="duel_action"
+            )
 
     session = get_duel_session_by_player(storage, me)
     if session is None:
@@ -1156,7 +1270,15 @@ async def _arena_send_frame(bot: VkMessenger, storage: Storage, event: VkEvent, 
     kb = _arena_keyboard()
     try:
         png = render_arena_frame(storage, sess)
-        await bot.send_photo(int(event.peer_id), png, caption=caption, reply_markup=kb, fallback_text=caption)
+        await _send_frame(
+            bot,
+            storage,
+            int(event.peer_id),
+            png,
+            caption=caption,
+            reply_markup=kb,
+            kind="arena",
+        )
     except Exception as exc:
         logger.warning("arena frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), caption, reply_markup=kb)
@@ -1185,7 +1307,7 @@ async def _arena_apply(bot: VkMessenger, storage: Storage, event: VkEvent) -> No
     else:
         result = None
     if result is not None:
-        await bot.send_message(int(event.peer_id), result.text)
+        await _send_ephemeral_text(bot, storage, int(event.peer_id), result.text, kind="arena_action")
     sess = get_arena_session(storage, int(event.user_id))
     if sess is None:
         await bot.send_message(
@@ -1358,7 +1480,15 @@ async def _coop_send_frames(bot: VkMessenger, storage: Storage, event: VkEvent, 
         except Exception:
             png = None
         if png:
-            await bot.send_photo(int(pid), png, caption=caption, reply_markup=_coop_fight_keyboard(), fallback_text=caption)
+            await _send_frame(
+                bot,
+                storage,
+                int(pid),
+                png,
+                caption=caption,
+                reply_markup=_coop_fight_keyboard(),
+                kind="coop",
+            )
         else:
             await bot.send_message(int(pid), caption, reply_markup=_coop_fight_keyboard())
 
@@ -1389,7 +1519,7 @@ async def _coop_apply(bot: VkMessenger, storage: Storage, event: VkEvent) -> Non
     else:
         result = None
     if result is not None:
-        await bot.send_message(int(event.peer_id), result.text)
+        await _send_ephemeral_text(bot, storage, int(event.peer_id), result.text, kind="coop_action")
     sess = get_coop_session_by_player(storage, int(event.user_id))
     if sess is None:
         await bot.send_message(int(event.peer_id), "Вылазка завершена.", reply_markup=_menu_keyboard())
@@ -1525,7 +1655,15 @@ async def _raid_send_frame_to(bot: VkMessenger, storage: Storage, user_id: int) 
         caption = "🪖 Тактический рейд"
     try:
         png = render_rgrid_frame_local(storage, sess, int(user_id))
-        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_raid_fight_keyboard(), fallback_text=caption)
+        await _send_frame(
+            bot,
+            storage,
+            int(user_id),
+            png,
+            caption=caption,
+            reply_markup=_raid_fight_keyboard(),
+            kind="raid",
+        )
     except Exception as exc:
         logger.warning("raid frame failed for %s: %s", user_id, exc)
         await bot.send_message(int(user_id), caption, reply_markup=_raid_fight_keyboard())
@@ -1566,7 +1704,7 @@ async def _raid_apply(bot: VkMessenger, storage: Storage, event: VkEvent) -> Non
     else:
         result = None
     if result is not None:
-        await bot.send_message(int(event.peer_id), result.text)
+        await _send_ephemeral_text(bot, storage, int(event.peer_id), result.text, kind="raid_action")
     await _raid_send_frames(bot, storage, event)
     sess = get_raid_grid_session_from_user(storage, int(event.user_id))
     if sess is None:
@@ -1694,7 +1832,7 @@ async def _war_ncap_send_frames(bot: VkMessenger, storage: Storage, event: VkEve
             caption = "🎯 Захват точки"
         try:
             png = render_ncap_frame(storage, sess, int(pid))
-            await bot.send_photo(int(pid), png, caption=caption, reply_markup=kb, fallback_text=caption)
+            await _send_frame(bot, storage, int(pid), png, caption=caption, reply_markup=kb, kind="war")
         except Exception:
             await bot.send_message(int(pid), caption, reply_markup=kb)
 
@@ -1779,7 +1917,15 @@ async def _war_cwar_send_frame_to(bot: VkMessenger, storage: Storage, user_id: i
         caption = "⚔️ Тактический штурм"
     try:
         png = render_cwar_frame(storage, sess, int(user_id))
-        await bot.send_photo(int(user_id), png, caption=caption, reply_markup=_war_cwar_keyboard(), fallback_text=caption)
+        await _send_frame(
+            bot,
+            storage,
+            int(user_id),
+            png,
+            caption=caption,
+            reply_markup=_war_cwar_keyboard(),
+            kind="war",
+        )
     except Exception as exc:
         logger.warning("cwar frame failed for %s: %s", user_id, exc)
         await bot.send_message(int(user_id), caption, reply_markup=_war_cwar_keyboard())
@@ -1815,7 +1961,7 @@ async def _war_ncap_apply(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     else:
         result = None
     if result is not None:
-        await bot.send_message(int(event.peer_id), result.text)
+        await _send_ephemeral_text(bot, storage, int(event.peer_id), result.text, kind="war_action")
     await _war_ncap_send_frames(bot, storage, event)
 
 
@@ -1836,7 +1982,7 @@ async def _war_cwar_apply(bot: VkMessenger, storage: Storage, event: VkEvent) ->
     else:
         result = None
     if result is not None:
-        await bot.send_message(int(event.peer_id), result.text)
+        await _send_ephemeral_text(bot, storage, int(event.peer_id), result.text, kind="war_action")
     await _war_cwar_send_frames(bot, storage, event)
 
 
@@ -2740,7 +2886,7 @@ async def _qmission_send_frame(
     text = caption if not note else f"{caption}\n\n{note}"
     kb = _qmission_keyboard(storage, int(event.user_id))
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=kb, fallback_text=text)
+        await _send_frame(bot, storage, int(event.peer_id), image, caption=text, reply_markup=kb, kind="quest")
     except Exception as exc:
         logger.warning("quest frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=kb)
@@ -2865,14 +3011,20 @@ async def _travel_open(bot: VkMessenger, storage: Storage, event: VkEvent, page:
         return
     traveling = is_traveling(player)
     if traveling:
+        from app.game_logic import travel_status_with_smuggle
+
         can_n2o = can_use_n2o_during_travel(storage, user_id)
-        kb_rows: list[list] = [[("⏱ Статус перехода", "travel:status")]]
+        kb_rows: list[list] = [[("⏱ Обновить время в пути", "travel:status")]]
         if can_n2o:
             kb_rows.append([("💨 Закись азота (N2O, ÷2 остаток)", "travel:n2o")])
         kb_rows.append([("⬅️ В меню", "walk:exit")])
+        status = travel_status_with_smuggle(storage, user_id) or (
+            f"🚐 В пути → «{player.travel_destination}»"
+        )
         text = (
             f"{format_location_display(player)}\n"
-            "⏱ Отсчёт времени — в отдельном сообщении с таймером.\n\n"
+            f"{status}\n\n"
+            "⏱ Сообщение-таймер обновляется само раз в минуту (там же — сколько ещё ехать).\n\n"
             "Пока идёт переход, другие действия на точке недоступны."
         )
         await bot.send_message(int(event.peer_id), text, reply_markup=inline_keyboard(*kb_rows))
@@ -2976,8 +3128,19 @@ async def _travel_go(
     if bound in ("niva", "truck") and mode in ("foot", "bicycle"):
         preferred = bound
     result = travel_to(storage, user_id, destination, transport_mode=mode if mode != preferred else preferred)
-    await bot.send_message(int(event.peer_id), result.text)
+    await _send_notice(bot, storage, int(event.peer_id), result.text, kind="travel")
     if result.ok:
+        from app.game_logic import travel_status_with_smuggle
+
+        status = travel_status_with_smuggle(storage, user_id)
+        if status:
+            await _travel_eta_show(
+                bot,
+                storage,
+                user_id,
+                f"{status}\n\nТаймер обновляется раз в минуту.",
+                peer_id=int(event.peer_id),
+            )
         await _travel_open(bot, storage, event, 0)
 
 
@@ -3032,6 +3195,154 @@ async def _travel_callback(bot: VkMessenger, storage: Storage, event: VkEvent, p
 
 
 # ---------------------------------------------------------------------------
+# Таймер перехода: живое сообщение «сколько ещё ехать» (одно на игрока)
+# ---------------------------------------------------------------------------
+
+
+def _travel_eta_meta_key(telegram_id: int) -> str:
+    """meta-ключ сообщения-таймера: хранит «peer_id:message_id»."""
+    return f"travel_eta_msg:{int(telegram_id)}"
+
+
+# Живой таймер перехода: правки раз в секунду (см. _travel_timer_loop).
+TRAVEL_TIMER_INTERVAL_SECONDS = 1.0
+# Не больше стольких правок за секунду — чтобы не упереться в лимиты VK API (20 зап/сек).
+TRAVEL_TIMER_MAX_UPDATES = 10
+
+
+def _travel_eta_state(storage: Storage, user_id: int) -> tuple[int, int]:
+    """(peer_id, message_id) живого таймера перехода или (0, 0)."""
+    raw = str(storage.get_meta(_travel_eta_meta_key(user_id)) or "").strip()
+    peer, _, message_id = raw.partition(":")
+    if message_id.isdigit() and peer.lstrip("-").isdigit():
+        return int(peer), int(message_id)
+    return 0, 0
+
+
+async def _travel_eta_show(
+    bot: VkMessenger,
+    storage: Storage,
+    user_id: int,
+    text: str,
+    *,
+    peer_id: int | None = None,
+) -> None:
+    """Показать/обновить таймер перехода: правим старое сообщение, а не шлём новое."""
+    body = str(text or "").strip()
+    if not body:
+        return
+    peer, message_id = _travel_eta_state(storage, user_id)
+    if message_id and peer:
+        if await bot.edit_message_text(body, peer, message_id):
+            return
+        storage.delete_meta(_travel_eta_meta_key(user_id))
+    target = int(peer_id or peer or user_id)
+    sent = await bot.send_message(target, body)
+    if sent:
+        from app.ephemeral_messages import NOTICE_TTL_SECONDS, schedule_message_deletion
+
+        storage.set_meta(_travel_eta_meta_key(user_id), f"{target}:{int(sent)}")
+        # Страховка на случай рестарта бота: таймер уйдёт сам, если переход «потеряется».
+        schedule_message_deletion(
+            storage,
+            target,
+            int(sent),
+            ttl_seconds=NOTICE_TTL_SECONDS,
+            kind="travel_eta",
+        )
+
+
+async def _travel_eta_finish(bot: VkMessenger, storage: Storage, user_id: int) -> None:
+    """Переход закончился — таймер убираем (прибытие сообщит тик переходов)."""
+    from app.ephemeral_messages import cancel_message_deletion, delete_message_safe
+
+    peer, message_id = _travel_eta_state(storage, user_id)
+    storage.delete_meta(_travel_eta_meta_key(user_id))
+    if peer and message_id:
+        cancel_message_deletion(storage, peer, message_id)
+        try:
+            await delete_message_safe(bot, peer, message_id)
+        except Exception as exc:
+            logger.debug("travel eta delete failed (%s): %s", user_id, exc)
+
+
+async def _travel_eta_tick(bot: VkMessenger, storage: Storage, *, limit: int | None = None) -> int:
+    """Обновить таймеры активных переходов (правим то же сообщение, не шлём новое).
+
+    Возвращает число обновлённых таймеров. ``limit`` ограничивает число правок
+    за один проход (анти-флуд VK: у сообщества есть лимит запросов в секунду).
+    """
+    from app.game_logic import collect_travel_eta_notices
+
+    notices = collect_travel_eta_notices(storage)
+    if limit is not None:
+        notices = notices[: max(1, int(limit))]
+    updated = 0
+    for telegram_id, status in notices:
+        try:
+            await _travel_eta_show(bot, storage, int(telegram_id), status)
+            updated += 1
+        except Exception as exc:
+            logger.debug("travel eta update failed (%s): %s", telegram_id, exc)
+    return updated
+
+
+async def _process_travel_arrivals(bot: VkMessenger, storage: Storage) -> int:
+    """Завершить просроченные переходы и сообщить игрокам о прибытии.
+
+    Зовётся и минутным тиком, и секундным таймером переходов — прибытие приходит
+    сразу, как только время вышло.
+    """
+    from app.game_logic import process_due_travels, try_auto_turn_in_contract
+
+    arrived = 0
+    for user_id, dest in process_due_travels(storage):
+        try:
+            await _travel_eta_finish(bot, storage, int(user_id))
+            destination = storage.pop_arrival_notice(int(user_id)) or dest
+            text = f"🏁 Ты прибыл в «{destination}»."
+            try:
+                from app.game_logic import resolve_smuggling_if_pending
+
+                smuggle_text = resolve_smuggling_if_pending(storage, int(user_id))
+                if smuggle_text:
+                    text += "\n\n" + smuggle_text.strip()
+            except Exception as exc:
+                logger.debug("smuggle resolve failed (%s): %s", user_id, exc)
+            auto = try_auto_turn_in_contract(storage, int(user_id))
+            if auto:
+                text += "\n\n" + auto
+            await _send_notice(
+                bot,
+                storage,
+                int(user_id),
+                text,
+                reply_markup=_menu_keyboard(),
+                kind="travel",
+            )
+            arrived += 1
+        except Exception as exc:
+            logger.debug("travel arrival notify failed (%s): %s", user_id, exc)
+    return arrived
+
+
+async def _travel_timer_loop(bot: VkMessenger) -> None:
+    """Фон: живой таймер перехода — правка раз в секунду + мгновенное прибытие.
+
+    Раньше таймер обновлялся вместе с минутным тиком, из-за чего секунды «замирали»,
+    а прибытие могло ждать до минуты.
+    """
+    while True:
+        await asyncio.sleep(TRAVEL_TIMER_INTERVAL_SECONDS)
+        try:
+            storage = get_storage()
+            await _process_travel_arrivals(bot, storage)
+            await _travel_eta_tick(bot, storage, limit=TRAVEL_TIMER_MAX_UPDATES)
+        except Exception as exc:
+            logger.debug("travel timer loop failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Поиск артефактов (app/artifact_hunt — охота 8×8 с детектором)
 # ---------------------------------------------------------------------------
 
@@ -3063,7 +3374,9 @@ async def _hunt_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_hunt_keyboard(), fallback_text=text)
+        await _send_frame(
+            bot, storage, int(event.peer_id), image, caption=text, reply_markup=_hunt_keyboard(), kind="hunt"
+        )
     except Exception as exc:
         logger.warning("hunt frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_hunt_keyboard())
@@ -3176,7 +3489,9 @@ async def _stash_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_stash_keyboard(), fallback_text=text)
+        await _send_frame(
+            bot, storage, int(event.peer_id), image, caption=text, reply_markup=_stash_keyboard(), kind="stash"
+        )
     except Exception as exc:
         logger.warning("stash frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_stash_keyboard())
@@ -3500,7 +3815,15 @@ async def _lab_send_frame(
     if session is not None:
         stage = str(session.stage or stage or "combat")
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lab_stage_keyboard(stage), fallback_text=text)
+        await _send_frame(
+            bot,
+            storage,
+            int(event.peer_id),
+            image,
+            caption=text,
+            reply_markup=_lab_stage_keyboard(stage),
+            kind="lab",
+        )
     except Exception as exc:
         logger.warning("lab frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_lab_stage_keyboard(stage))
@@ -3955,7 +4278,9 @@ async def _smuggle_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_smuggle_kb(), fallback_text=text)
+        await _send_frame(
+            bot, storage, int(event.peer_id), image, caption=text, reply_markup=_smuggle_kb(), kind="smuggle"
+        )
     except Exception as exc:
         logger.warning("smuggle frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_smuggle_kb())
@@ -4240,12 +4565,14 @@ async def _locmap_zonemap(bot: VkMessenger, storage: Storage, event: VkEvent) ->
             player_faction=player.faction,
             show_markers=True,
         )
-        await bot.send_photo(
+        await _send_frame(
+            bot,
+            storage,
             int(event.peer_id),
             image,
             caption=caption,
             reply_markup=kb,
-            fallback_text=caption,
+            kind="zonemap",
         )
     except Exception as exc:
         logger.warning("zone map failed: %s", exc)
@@ -4386,7 +4713,9 @@ async def _lair_send_frame(
 ) -> None:
     text = caption if not note else f"{caption}\n\n{note}"
     try:
-        await bot.send_photo(int(event.peer_id), image, caption=text, reply_markup=_lair_kb(), fallback_text=text)
+        await _send_frame(
+            bot, storage, int(event.peer_id), image, caption=text, reply_markup=_lair_kb(), kind="lair"
+        )
     except Exception as exc:
         logger.warning("lair frame failed: %s", exc)
         await bot.send_message(int(event.peer_id), text, reply_markup=_lair_kb())
@@ -4533,7 +4862,7 @@ async def _faction_goals_claim(bot: VkMessenger, storage: Storage, event: VkEven
 # ---------------------------------------------------------------------------
 
 _ADMIN_IDS: tuple[int, ...] = ()
-APP_VERSION = "1.0.38"
+APP_VERSION = "1.0.39"
 
 # Дедуп фоновых уведомлений о смерти: не спамить сообщениями чаще раза в 30 мин.
 _offline_death_notify: dict[int, float] = {}
@@ -4694,6 +5023,18 @@ async def _admin_command(bot: VkMessenger, storage: Storage, event: VkEvent, low
         await bot.send_message(int(event.peer_id), f"Время прибытия {target.nickname} обновлено (+{seconds} сек).")
         return True
 
+    if cmd in ("выброс", "/выброс", "emission", "/emission"):
+        await _admin_emission_cmd(bot, storage, event, args)
+        return True
+
+    if cmd in ("уроннпс", "/уроннпс", "npcdamage", "/npcdamage"):
+        await _admin_npc_damage_cmd(bot, storage, event, args)
+        return True
+
+    if cmd in ("нпс", "/нпс", "npccount", "/npccount"):
+        await _admin_npc_count_cmd(bot, storage, event, args)
+        return True
+
     if cmd in ("всем", "/всем", "all", "/all"):
         announcement = " ".join(args)
         if not announcement:
@@ -4711,6 +5052,170 @@ async def _admin_command(bot: VkMessenger, storage: Storage, event: VkEvent, low
         return True
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Админ-управление игровым процессом: Выброс, урон НПС, число НПС в заданиях
+# ---------------------------------------------------------------------------
+
+
+async def _admin_broadcast(bot: VkMessenger, storage: Storage, text: str) -> int:
+    """Разослать текст всем игрокам (с анти-флуд паузой), вернуть число доставленных."""
+    from app.ephemeral_messages import NOTICE_TTL_SECONDS, schedule_messages_deletion
+
+    delivered: list[tuple[int, int]] = []
+    for raw in storage.list_player_ids():
+        try:
+            message_id = await bot.send_message(int(raw), text)
+            if message_id:
+                delivered.append((int(raw), int(message_id)))
+            await asyncio.sleep(0.05)
+        except Exception as exc:
+            logger.debug("broadcast failed (%s): %s", raw, exc)
+    # Объявления админа тоже не копятся вечно.
+    schedule_messages_deletion(
+        storage,
+        delivered,
+        ttl_seconds=NOTICE_TTL_SECONDS,
+        kind="admin_notice",
+    )
+    return len(delivered)
+
+
+async def _admin_emission_cmd(bot: VkMessenger, storage: Storage, event: VkEvent, args: list[str]) -> None:
+    """«выброс [минуты]» — запустить Выброс; «выброс стоп» — отменить."""
+    from app.game_logic import cancel_emission, trigger_emission
+
+    peer = int(event.peer_id)
+    word = str(args[0]).strip().lower() if args else ""
+    if word in ("стоп", "stop", "отмена", "cancel", "сброс"):
+        result = cancel_emission(storage)
+        await bot.send_message(peer, getattr(result, "text", str(result)))
+        return
+    minutes = 0
+    if args:
+        try:
+            minutes = max(0, min(180, int(word)))
+        except (TypeError, ValueError):
+            await bot.send_message(
+                peer,
+                "Формат: выброс [минуты] | выброс стоп\n"
+                "Примеры: «выброс» — волны сразу, «выброс 15» — через 15 минут.",
+            )
+            return
+    try:
+        text, notify_ids, killed = trigger_emission(storage, minutes=minutes)
+    except Exception as exc:
+        logger.exception("admin emission failed")
+        await bot.send_message(peer, f"Не удалось запустить Выброс: {exc}")
+        return
+    if not text:
+        await bot.send_message(peer, "Выброс запущен, но оповещать некого (нет игроков).")
+        return
+    delivered = await _admin_broadcast(bot, storage, text)
+    tail = f"\n\nУбитых волной: {len(killed)}." if killed else ""
+    await bot.send_message(
+        peer,
+        f"☢️ Выброс запущен ({'сразу' if minutes <= 0 else f'через ~{minutes} мин'}).\n"
+        f"Оповещено игроков: {delivered}.{tail}",
+    )
+
+
+async def _admin_npc_damage_cmd(bot: VkMessenger, storage: Storage, event: VkEvent, args: list[str]) -> None:
+    """«уроннпс [категория] [множитель]» — урон НПС по категориям (задания/лабы)."""
+    from app.admin_gameplay import (
+        NPC_DAMAGE_MAX,
+        NPC_DAMAGE_MIN,
+        category_label,
+        format_npc_damage_report,
+        normalize_category,
+        npc_damage_multiplier,
+        parse_multiplier,
+        reset_npc_damage_multiplier,
+        set_npc_damage_multiplier,
+    )
+
+    peer = int(event.peer_id)
+    if not args:
+        await bot.send_message(peer, format_npc_damage_report(storage))
+        return
+    word = str(args[0]).strip().lower()
+    if word in ("сброс", "reset", "сбросить", "поумолчанию", "по", "default"):
+        category = normalize_category(args[1]) if len(args) > 1 else None
+        dropped = reset_npc_damage_multiplier(storage, category)
+        if not dropped:
+            await bot.send_message(peer, "Сбрасывать нечего — настройки и так по умолчанию.")
+            return
+        labels = ", ".join(category_label(item) for item in dropped)
+        await bot.send_message(peer, f"🎯 Сброшено: {labels}.\n\n{format_npc_damage_report(storage)}")
+        return
+    category = normalize_category(word)
+    if category is None:
+        await bot.send_message(
+            peer,
+            "Категории: задания | лабы | лаба1 | лаба2 | лаба3 | все.\n"
+            "Формат: уроннпс задания 1.5 | уроннпс лабы 0.5 | уроннпс сброс [категория]",
+        )
+        return
+    if len(args) < 2:
+        current = npc_damage_multiplier(storage, category)
+        await bot.send_message(
+            peer,
+            f"🎯 {category_label(category)}: ×{current:g}\n"
+            f"Чтобы изменить: уроннпс {word} 1.5 (множитель {NPC_DAMAGE_MIN:g}–{NPC_DAMAGE_MAX:g}).",
+        )
+        return
+    value = parse_multiplier(args[1])
+    if value is None:
+        await bot.send_message(
+            peer,
+            f"Множитель — число от {NPC_DAMAGE_MIN:g} до {NPC_DAMAGE_MAX:g} (например 1.5, 0.5, 2).",
+        )
+        return
+    applied = set_npc_damage_multiplier(storage, category, value)
+    await bot.send_message(
+        peer,
+        f"🎯 Урон НПС · {category_label(category)}: ×{applied:g}\n\n{format_npc_damage_report(storage)}",
+    )
+
+
+async def _admin_npc_count_cmd(bot: VkMessenger, storage: Storage, event: VkEvent, args: list[str]) -> None:
+    """«нпс [число|сброс]» — сколько НПС ставить в заданиях."""
+    from app.admin_gameplay import (
+        format_quest_npc_count,
+        quest_npc_count,
+        reset_quest_npc_count,
+        set_quest_npc_count,
+    )
+
+    peer = int(event.peer_id)
+    if not args:
+        await bot.send_message(
+            peer,
+            f"👥 НПС в заданиях: {format_quest_npc_count(storage)}.\n"
+            "Формат: нпс 5 (0 — задания без НПС) | нпс сброс",
+        )
+        return
+    word = str(args[0]).strip().lower()
+    if word in ("сброс", "reset", "сбросить", "поумолчанию", "default"):
+        if not reset_quest_npc_count(storage):
+            await bot.send_message(peer, "И так по умолчанию: НПС в заданиях — как в контракте.")
+            return
+        await bot.send_message(peer, "👥 НПС в заданиях снова как в контракте.")
+        return
+    try:
+        count = int(word)
+    except (TypeError, ValueError):
+        await bot.send_message(peer, "Формат: нпс 5 (0 — без НПС) | нпс сброс")
+        return
+    before = quest_npc_count(storage)
+    applied = set_quest_npc_count(storage, count)
+    was = "как в контракте" if before is None else str(before)
+    await bot.send_message(
+        peer,
+        f"👥 НПС в заданиях: {format_quest_npc_count(storage)} (было: {was}).\n"
+        "Действует на новые вылазки по контрактам и события.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5869,28 +6374,35 @@ async def _zone_tick(bot: VkMessenger) -> None:
         _tick_t0 = time.monotonic()
         storage = get_storage()
         try:
-            from app.game_logic import process_due_travels, try_auto_turn_in_contract
-
-            for user_id, dest in process_due_travels(storage):
-                try:
-                    destination = storage.pop_arrival_notice(int(user_id)) or dest
-                    text = f"🏁 Ты прибыл в «{destination}»."
-                    try:
-                        from app.game_logic import resolve_smuggling_if_pending
-
-                        smuggle_text = resolve_smuggling_if_pending(storage, int(user_id))
-                        if smuggle_text:
-                            text += "\n\n" + smuggle_text.strip()
-                    except Exception as exc:
-                        logger.debug("smuggle resolve failed (%s): %s", user_id, exc)
-                    auto = try_auto_turn_in_contract(storage, int(user_id))
-                    if auto:
-                        text += "\n\n" + auto
-                    await bot.send_message(int(user_id), text)
-                except Exception as exc:
-                    logger.debug("travel arrival notify failed (%s): %s", user_id, exc)
+            await _process_travel_arrivals(bot, storage)
         except Exception:
             logger.exception("Travel arrival tick failed")
+        # Таймеры активных переходов: «сколько ещё ехать» (основную работу делает
+        # секундный цикл _travel_timer_loop; здесь — страховка, если он отстал).
+        try:
+            await _travel_eta_tick(bot, storage, limit=TRAVEL_TIMER_MAX_UPDATES)
+        except Exception as exc:
+            logger.debug("travel eta tick failed: %s", exc)
+        # Удаление устаревших сообщений бота (кадры активности и уведомления).
+        try:
+            from app.ephemeral_messages import process_ephemeral_message_queue
+
+            removed = await process_ephemeral_message_queue(bot, storage)
+            if removed:
+                logger.info("Удалено устаревших сообщений бота: %s", removed)
+        except Exception as exc:
+            logger.debug("ephemeral queue tick failed: %s", exc)
+        # Выброс: предупреждения за 60/30 мин и волны по зонам (цикл раз в 6 ч).
+        try:
+            from app.game_logic import process_emission_cycle
+
+            em_text, em_ids, em_killed = process_emission_cycle(storage)
+            if em_text:
+                await _broadcast_notice(bot, storage, em_text, ids=em_ids, kind="emission")
+            if em_killed:
+                logger.info("Выброс: погибло вне баз — %s", len(em_killed))
+        except Exception as exc:
+            logger.debug("emission cycle failed: %s", exc)
         try:
             from datetime import datetime, timezone
 
@@ -5950,7 +6462,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
 
             for user_id, result in process_quest_timeouts(storage):
                 try:
-                    await bot.send_message(int(user_id), result.text)
+                    await _send_notice(bot, storage, int(user_id), result.text, kind="timeout")
                 except Exception as exc:
                     logger.debug("quest timeout notify failed (%s): %s", user_id, exc)
         except Exception:
@@ -5960,7 +6472,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
 
             for user_id, result in process_hunt_timeouts(storage):
                 try:
-                    await bot.send_message(int(user_id), result.text)
+                    await _send_notice(bot, storage, int(user_id), result.text, kind="timeout")
                 except Exception as exc:
                     logger.debug("hunt timeout notify failed (%s): %s", user_id, exc)
         except Exception:
@@ -5994,12 +6506,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
                 else:
                     event_payloads.append(vk_plain(format_special_resolve_html(str(special_payload.get("text") or ""))))
             for text in event_payloads:
-                for user_id in storage.list_player_ids():
-                    try:
-                        await bot.send_message(int(user_id), text)
-                        await asyncio.sleep(0.05)  # анти-флуд VK
-                    except Exception as exc:
-                        logger.debug("event notify failed (%s): %s", user_id, exc)
+                await _broadcast_notice(bot, storage, text, kind="event")
         except Exception:
             logger.exception("Zone event cycle tick failed")
         # Динамические события Зоны: модификаторы локаций каждые 30–90 мин.
@@ -6009,12 +6516,7 @@ async def _zone_tick(bot: VkMessenger) -> None:
 
                 text, ids = process_zone_event_cycle(storage)
                 if text:
-                    for uid in ids:
-                        try:
-                            await bot.send_message(int(uid), text)
-                            await asyncio.sleep(0.05)  # анти-флуд VK
-                        except Exception as exc:
-                            logger.debug("zone event notify failed (%s): %s", uid, exc)
+                    await _broadcast_notice(bot, storage, text, ids=ids, kind="zone_event")
             except Exception as exc:
                 logger.debug("zone event cycle failed: %s", exc)
         # Ежедневный бонус владельца (~раз в 10 мин).
@@ -6063,10 +6565,13 @@ async def _zone_tick(bot: VkMessenger) -> None:
                             continue
                         _offline_death_notify[user_id] = time.time()
                         result = respawn_character(storage, user_id)
-                        await bot.send_message(
+                        await _send_notice(
+                            bot,
+                            storage,
                             user_id,
                             f"☠️ Ты погиб в Зоне…\n\n{result.text}",
                             reply_markup=_menu_keyboard(),
+                            kind="death",
                         )
                     except Exception as exc:
                         logger.debug("offline survival/respawn failed (%s): %s", user_id, exc)
@@ -6172,6 +6677,9 @@ async def _handle_message(bot: VkMessenger, storage: Storage, event: VkEvent) ->
         "setseason", "/setseason", "confirm_topup", "/confirm_topup",
         "setfaction", "/setfaction", "leader", "/leader", "commander", "/commander",
         "settravel", "/settravel", "всем", "/всем", "all", "/all",
+        "выброс", "/выброс", "emission", "/emission",
+        "уроннпс", "/уроннпс", "npcdamage", "/npcdamage",
+        "нпс", "/нпс", "npccount", "/npccount",
     ):
         if await _admin_command(bot, storage, event, lowered, text):
             return
@@ -6713,10 +7221,10 @@ def main(use_webhook: bool | None = None) -> None:
         from app.vk_platform import run_webhook
 
         logger.info("VK Callback webhook стартует (port=%s)", settings.webhook_port)
-        run_webhook(settings, handle_event, background=[_zone_tick, _duel_tick])
+        run_webhook(settings, handle_event, background=[_zone_tick, _duel_tick, _travel_timer_loop])
     else:
         logger.info("VK Long Poll стартует (group_id=%s)", settings.group_id)
-        run_longpoll(settings, handle_event, background=[_zone_tick, _duel_tick])
+        run_longpoll(settings, handle_event, background=[_zone_tick, _duel_tick, _travel_timer_loop])
 
 
 if __name__ == "__main__":

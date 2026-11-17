@@ -1086,7 +1086,13 @@ def _direction_to(origin: tuple[int, int], target: tuple[int, int]) -> str | Non
 
 
 def _npc_shots(storage: Storage, session: LabSession) -> list[str]:
-    """Огонь НПС: npc_weapon_damage → apply_incoming_damage → × damage_mult лабы."""
+    """Огонь НПС: npc_weapon_damage → apply_incoming_damage → × damage_mult лабы.
+
+    Дополнительно умножается на админ-множитель урона НПС («уроннпс лабы 0.5»).
+    """
+    from app.admin_gameplay import lab_damage_multiplier
+
+    admin_mult = lab_damage_multiplier(storage, session.lab_id)
     notes: list[str] = []
     tid = session.telegram_id
     player_pos = session.pos(tid)
@@ -1122,7 +1128,7 @@ def _npc_shots(storage: Storage, session: LabSession) -> list[str]:
             dmg = apply_incoming_damage(pre, character, min_damage=1)
         else:
             dmg = pre
-        mult = _enemy_mult(session, i)
+        mult = _enemy_mult(session, i) * admin_mult
         dmg = max(10, int(round(dmg * mult)))
         _apply_damage_to_player(session, dmg, cause="npc", killer_name=_enemy_label(
             session.enemy_kinds[i] if i < len(session.enemy_kinds) else "dark_stalker", npc=True
@@ -1221,12 +1227,15 @@ def _npc_step(
 
 def _hostile_turn(storage: Storage, session: LabSession) -> list[str]:
     """Ход врагов: мутанты (свои способности) + НПС (движение и стрельба)."""
+    from app.admin_gameplay import lab_damage_multiplier
+
     notes: list[str] = []
     tid = session.telegram_id
     player_pos = session.pos(tid)
     player_cells: set[tuple[int, int]] = {player_pos}
     character = storage.get_character(tid, refresh_energy=False)
     occupied = _enemy_cells(session)
+    admin_npc_mult = lab_damage_multiplier(storage, session.lab_id)
 
     moved: list[list[int]] = []
     for i, pos_raw in enumerate(session.enemies):
@@ -1235,6 +1244,9 @@ def _hostile_turn(storage: Storage, session: LabSession) -> list[str]:
         kind = session.enemy_kinds[i] if i < len(session.enemy_kinds) else "blind_dog"
         weapon = session.enemy_weapons[i] if i < len(session.enemy_weapons) else None
         mult = _enemy_mult(session, i)
+        if etype != "mutant":
+            # НПС: админ-множитель урона («уроннпс лабы X», «уроннпс лаба2 Y»).
+            mult *= admin_npc_mult
         occupied.discard(pos)
         if etype == "mutant":
             nxt = _mutant_step(

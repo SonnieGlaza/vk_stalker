@@ -78,7 +78,8 @@ def test_photo_upload_uses_one_httpx_attempt_with_five_second_deadline(monkeypat
     assert list(calls[1][2]) == ["photo"]
 
 
-def test_send_photo_uses_document_once_then_sends_caption(monkeypatch):
+def test_send_photo_retries_photo_then_document(monkeypatch):
+    """Кадр всегда с картинкой: повтор загрузки фото, затем документ (без текста)."""
     calls = []
     sent = []
     messenger = object.__new__(platform.VkMessenger)
@@ -102,5 +103,31 @@ def test_send_photo_uses_document_once_then_sends_caption(monkeypatch):
     result = _run(messenger.send_photo(42, b"image-bytes", caption="карта"))
 
     assert result == 9
-    assert [item[0] for item in calls] == ["photo", "document"]
+    assert [item[0] for item in calls] == ["photo"] * platform.PHOTO_UPLOAD_ATTEMPTS + ["document"]
     assert sent == [(42, "карта", "doc-1_2")]
+
+
+def test_send_photo_never_sends_text_without_image(monkeypatch):
+    """Если картинка не ушла совсем — текстового сообщения вместо кадра нет."""
+    sent = []
+    messenger = object.__new__(platform.VkMessenger)
+
+    async def fail_upload(data, peer_id):
+        return None
+
+    async def send_message(chat_id, text, *, reply_markup=None, attachment=None, **kwargs):
+        sent.append((chat_id, text, attachment))
+        return 9
+
+    monkeypatch.setattr(messenger, "_upload_photo_attachment", fail_upload)
+    monkeypatch.setattr(messenger, "_upload_photo_document", fail_upload)
+    monkeypatch.setattr(messenger, "send_message", send_message)
+
+    assert _run(messenger.send_photo(42, b"image-bytes", caption="карта")) is None
+    assert sent == []
+
+
+def test_photo_upload_fields_for_bulk_protocol():
+    """Под новый v2/bulk_upload первым идёт поле file1, под upload.php — photo."""
+    assert platform._photo_upload_fields("https://pu.vk.com/v2/bulk_upload?x=1")[0] == "file1"
+    assert platform._photo_upload_fields("https://pu.vk.com/upload.php?x=1")[0] == "photo"

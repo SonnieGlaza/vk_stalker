@@ -2560,6 +2560,20 @@ def respawn_character(storage: Storage, telegram_id: int) -> ActionResult:
     home = faction_home_base(player.faction)
     storage.set_location(telegram_id, home)
     storage.clear_travel(telegram_id)
+    # Журнал смертей: в «☠️ Смерти» должна попадать любая смерть — тактическая,
+    # оффлайн-голод/радиация и ручной /respawn. Раньше историю писал только
+    # бот-обработчик респавна, поэтому журнал казался пустым.
+    if not storage.get_meta(_death_notice_sent_key(telegram_id)):
+        try:
+            story = build_dead_character_text(
+                player,
+                where=player.location,
+                cause=death_cause or "combat",
+                storage=storage,
+            )
+            append_death_log_once(storage, telegram_id, story)
+        except Exception:
+            logger.exception("death log append failed (%s)", telegram_id)
     pop_death_cause(storage, telegram_id)
     pop_death_killer(storage, telegram_id)
     clear_death_notice_sent(storage, telegram_id)
@@ -7006,9 +7020,11 @@ def travel_to(
         "truck": f"на грузовике (×{TRAVEL_SPEED_TRUCK:g})",
     }
     note_text = f"\n{foot_note}" if foot_note else ""
+    remaining_text = format_remaining_travel(arrives_at) if arrives_at is not None else "скоро"
     return ActionResult(
         True,
         f"Выехал из «{character.location}» → «{destination}» {transport_labels[transport_mode]}.\n"
+        f"⏱ В пути: {travel_minutes} игр. мин (≈{real_seconds} сек), осталось ехать: {remaining_text}.\n"
         f"Затрачено энергии: {energy_cost}."
         f"{fuel_text}{vehicle_wear_text}{note_text}{n2o_note}",
     )
@@ -10344,6 +10360,48 @@ def process_emission_cycle(storage: Storage) -> tuple[str, list[int], list[int]]
 
     # Старт волн: первая волна выполняется сразу этим тиком.
     return _execute_emission_wave(storage, "wave1", now, notify_ids)
+
+
+def trigger_emission(storage: Storage, *, minutes: int = 0) -> tuple[str, list[int], list[int]]:
+    """Админ-запуск Выброса: волны стартуют через `minutes` минут (0 — сразу).
+
+    Возвращает (текст для рассылки, кому слать, кого убило) — как process_emission_cycle.
+    """
+    now = datetime.now(timezone.utc)
+    notify_ids = storage.list_player_ids()
+    delay = max(0, int(minutes))
+    if delay <= 0:
+        storage.set_meta(EMISSION_META_PHASE, "calm")
+        storage.delete_meta(EMISSION_META_WAVE_AT)
+        return _execute_emission_wave(storage, "wave1", now, notify_ids)
+
+    bases = ", ".join(sorted(_safe_base_location_names(storage))) or "базы группировок"
+    storage.set_meta(EMISSION_META_AT, (now + timedelta(minutes=delay)).isoformat())
+    storage.set_meta(EMISSION_META_PHASE, "calm")
+    storage.delete_meta(EMISSION_META_WAVE_AT)
+    # Предупреждения за 60/30 мин уже не нужны, если Выброс ближе.
+    storage.set_meta(EMISSION_META_WARN60, "1" if delay <= EMISSION_WARN_60_MINUTES else "0")
+    storage.set_meta(EMISSION_META_WARN30, "1" if delay <= EMISSION_WARN_30_MINUTES else "0")
+    text = (
+        f"☢️ ВЫБРОС объявлен: волны стартуют через ~{delay} мин.\n"
+        f"Уходи на базу — безопасно только там: {bases}."
+    )
+    return text, notify_ids, []
+
+
+def cancel_emission(storage: Storage) -> ActionResult:
+    """Отменить запланированный/идущий Выброс (админ-команда «выброс стоп»)."""
+    now = datetime.now(timezone.utc)
+    storage.set_meta(EMISSION_META_PHASE, "calm")
+    storage.delete_meta(EMISSION_META_WAVE_AT)
+    storage.set_meta(EMISSION_META_AT, (now + timedelta(hours=EMISSION_INTERVAL_HOURS)).isoformat())
+    storage.set_meta(EMISSION_META_WARN60, "0")
+    storage.set_meta(EMISSION_META_WARN30, "0")
+    return ActionResult(
+        True,
+        "Выброс отменён. Следующий по расписанию примерно через "
+        f"{EMISSION_INTERVAL_HOURS} ч. (или запусти командой «выброс»).",
+    )
 
 
 def build_emission_status(storage: Storage) -> str:

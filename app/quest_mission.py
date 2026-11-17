@@ -226,6 +226,20 @@ def _npc_damage_mult(session: QuestMissionSession | Any) -> float:
     return float(NPC_DAMAGE_MULT_BY_DIFFICULTY.get(diff, 1.0))
 
 
+def _quest_npc_count(storage: Storage | None) -> int | None:
+    """Админ-настройка «нпс N»: сколько НПС ставить в вылазках по контрактам."""
+    from app.admin_gameplay import quest_npc_count
+
+    return quest_npc_count(storage)
+
+
+def _admin_npc_damage_mult(storage: Storage | None) -> float:
+    """Админ-множитель урона НПС для заданий (команда «уроннпс задания X»)."""
+    from app.admin_gameplay import CATEGORY_QUESTS, npc_damage_multiplier
+
+    return npc_damage_multiplier(storage, CATEGORY_QUESTS)
+
+
 def _mutants_chase_player(session: QuestMissionSession | Any) -> bool:
     if bool(getattr(session, "mutant_chase", False)):
         return True
@@ -722,6 +736,32 @@ def _spawn_npcs(
         forbidden.add(cell)
 
 
+def _apply_npc_count_override(
+    count: int,
+    grid: int,
+    forbidden: set[tuple[int, int]],
+    npcs: list[tuple[int, int]],
+    npc_kinds: list[str],
+    npc_weapons: list[str],
+    difficulty: str,
+) -> None:
+    """Админ-настройка «нпс N»: в вылазке ровно N НПС (0 — ни одного).
+
+    Работает и в обе стороны: обрезает лишних и добирает недостающих,
+    даже если контракт НПС вообще не предусматривал.
+    """
+    target = max(0, int(count))
+    while len(npcs) > target:
+        npcs.pop()
+        if npc_kinds:
+            npc_kinds.pop()
+        if npc_weapons:
+            npc_weapons.pop()
+    missing = target - len(npcs)
+    if missing > 0:
+        _spawn_npcs(missing, grid, forbidden, npcs, npc_kinds, npc_weapons, difficulty=difficulty)
+
+
 def _pick_monolith_weapon() -> str:
     return random.choices(
         QUEST_MONOLITH_NPC_WEAPONS,
@@ -778,7 +818,17 @@ def _apply_special_mission_spawn_overrides(
         )
 
 
-def _build_session(template: QuestContractTemplate, quest: QuestType) -> QuestMissionSession:
+def _build_session(
+    template: QuestContractTemplate,
+    quest: QuestType,
+    *,
+    npc_count_override: int | None = None,
+) -> QuestMissionSession:
+    """Собрать сессию вылазки. npc_count_override — админ-настройка «нпс N».
+
+    None — как задумано контрактом; 0 — задание без НПС; N — ровно N НПС.
+    """
+    npc_override = None if npc_count_override is None else max(0, int(npc_count_override))
     kind = template.mission_kind
     difficulty = template.difficulty
     danger = _location_danger(template.work_location, difficulty)
@@ -844,21 +894,25 @@ def _build_session(template: QuestContractTemplate, quest: QuestType) -> QuestMi
         anom_n = base_n + 1 + (2 if monolith_escort else 0)
         _spawn_n(anom_n, grid, forbidden, hazards)
         host_n = base_n + (2 if monolith_escort else 0)
+        npc_host_n = host_n if npc_override is None else npc_override
         # Спасение пленного — плотные атаки: мутанты + мародёры Монолита.
-        if monolith_escort or random.random() < 0.5:
+        if monolith_escort or (npc_override is None and random.random() < 0.5):
             _spawn_mutants(host_n, grid, forbidden, enemies, enemy_kinds)
             if monolith_escort:
                 _spawn_monolith_npcs(
-                    max(2, host_n // 2),
+                    npc_host_n if npc_override is not None else max(2, host_n // 2),
                     grid,
                     forbidden,
                     npcs,
                     npc_kinds,
                     npc_weapons,
                 )
+        elif npc_override == 0:
+            # Админ выключил НПС — эскорт прикрывают только мутанты.
+            _spawn_mutants(host_n, grid, forbidden, enemies, enemy_kinds)
         else:
             _spawn_npcs(
-                host_n,
+                npc_host_n,
                 grid,
                 forbidden,
                 npcs,
@@ -886,7 +940,7 @@ def _build_session(template: QuestContractTemplate, quest: QuestType) -> QuestMi
                         enemy_kinds[i] = "zombie"
         if want_npc:
             if dark_stalker_duel:
-                npc_n = 1
+                npc_n = 1 if npc_override is None else npc_override
                 _spawn_npcs(
                     npc_n,
                     grid,
@@ -900,11 +954,15 @@ def _build_session(template: QuestContractTemplate, quest: QuestType) -> QuestMi
                 )
             elif monolith_march:
                 npc_n = max(base_n + 2, 5 if difficulty == "heavy" else 4)
+                if npc_override is not None:
+                    npc_n = npc_override
                 _spawn_monolith_npcs(npc_n, grid, forbidden, npcs, npc_kinds, npc_weapons)
             else:
                 npc_n = base_n + (1 if kind == "clear_marauder" else 0)
                 if heli_crash:
                     npc_n = max(npc_n, base_n + 2)
+                if npc_override is not None:
+                    npc_n = npc_override
                 _spawn_npcs(
                     npc_n,
                     grid,
@@ -919,6 +977,17 @@ def _build_session(template: QuestContractTemplate, quest: QuestType) -> QuestMi
                     # Охрана обломков — только военные.
                     for i in range(len(npc_kinds)):
                         npc_kinds[i] = "soldier"
+
+    if npc_override is not None:
+        _apply_npc_count_override(
+            npc_override,
+            grid,
+            forbidden,
+            npcs,
+            npc_kinds,
+            npc_weapons,
+            difficulty,
+        )
 
     enemy_hp, enemy_max_hp = _unit_hp_lists(enemy_kinds, difficulty, template.work_location)
     npc_hp, npc_max_hp = _unit_hp_lists(npc_kinds, difficulty, template.work_location)
@@ -1073,7 +1142,9 @@ def _maybe_npc_shots(
         player_characters={telegram_id: player},
         cover=set(),
         base_cover=set(),
-        damage_fn=lambda w: npc_weapon_damage(w, mult=_npc_damage_mult(session)),
+        damage_fn=lambda w: npc_weapon_damage(
+            w, mult=_npc_damage_mult(session) * _admin_npc_damage_mult(storage)
+        ),
         shoot_chance=_npc_shoot_chance(session),
         aim_at_players=True,
     )
@@ -1795,7 +1866,7 @@ def start_or_resume_quest_mission(
             f"Нужна сила снаряги ≥ {template.min_gear_power} (сейчас {equipment_power(player)}).",
         )
 
-    session = _build_session(template, quest)
+    session = _build_session(template, quest, npc_count_override=_quest_npc_count(storage))
     _apply_special_mission_spawn_overrides(template, session, player)
     session.resources_spent = True
     save_mission_session(storage, telegram_id, session)

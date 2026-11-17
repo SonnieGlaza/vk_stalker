@@ -28,6 +28,7 @@ from app.artifact_hunt import (
     _paste_rounded,
     _player_grid_token,
     legend_icon_for,
+    legend_icon_raw,
 )
 from app.location_zones import location_zones_for
 from app.storage import Character, Storage
@@ -595,15 +596,14 @@ def _draw_zone(
                 bx = int(left + (fx + 1) / 2 * w)
                 by = int(top + (fy + 1) / 2 * h)
                 draw.ellipse((bx - br, by - br, bx + br, by + br), outline=(*color, 220), width=2)
-    # Иконка зоны из «Метки легенд» — рисуем в центре зоны на карте.
-    icon = legend_icon_for(kind, size=36)
+    # Иконка зоны из «Метки легенд» — растягиваем на всю область зоны:
+    # одиночная клетка = размер клетки, зона из нескольких клеток — весь её прямоугольник.
+    icon = legend_icon_raw(kind)
     if icon is not None:
-        iw, ih = icon.size
-        canvas.paste(
-            icon,
-            ((left + right) // 2 - iw // 2, (top + bottom) // 2 - ih // 2),
-            icon,
-        )
+        box_w = max(1, right - left + 1)
+        box_h = max(1, bottom - top + 1)
+        icon = icon.resize((box_w, box_h), Image.Resampling.LANCZOS)
+        canvas.paste(icon, (left, top), icon)
 
 
 def render_walk_frame(storage: Storage, player: Character) -> bytes:

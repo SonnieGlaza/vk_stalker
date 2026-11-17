@@ -743,14 +743,18 @@ def _load_hunt_map(location: str, marked: bool = False) -> Image.Image | None:
 
 
 def _load_location_thumb(location: str) -> Image.Image | None:
-    """Превью локации из assets/locations (для панели справа сверху)."""
+    """Превью локации из assets/locations (для панели справа сверху).
+
+    Если отдельной картинки нет (например, Тунель) — берём карту локации
+    из assets/maps, чтобы панель не оставалась пустой.
+    """
     filename = _LOCATION_THUMB_MAP.get(location)
-    if filename is None:
-        return None
-    try:
-        return Image.open(_LOCATION_THUMB_DIR / filename).convert("RGB")
-    except Exception:
-        return None
+    if filename is not None:
+        try:
+            return Image.open(_LOCATION_THUMB_DIR / filename).convert("RGB")
+        except Exception:
+            pass
+    return _load_hunt_map(location)
 
 
 @lru_cache(maxsize=12)

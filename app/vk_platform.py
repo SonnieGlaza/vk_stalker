@@ -206,6 +206,18 @@ def keyboard_to_json(kb: VkKeyboard | None) -> str | None:
 # грузить смысла нет — клиент всё равно показывает превью, а сервер может отклонить.
 _PHOTO_MAX_DIM = 4000
 
+# Имена поля с файлом в upload-запросе: старый upload.php ждёт «photo»,
+# новый v2/bulk_upload — «file1»/«file0». Перебираем по порядку, пока VK не примет.
+PHOTO_UPLOAD_FIELDS: tuple[str, ...] = ("photo", "file1", "file0")
+PHOTO_UPLOAD_ATTEMPTS = 2
+
+
+def _photo_upload_fields(upload_url: str) -> tuple[str, ...]:
+    """Порядок полей для upload-запроса: под новый v2/bulk_upload первым идёт file1."""
+    if "bulk_upload" in str(upload_url or "").lower():
+        return ("file1", "file0", "photo")
+    return PHOTO_UPLOAD_FIELDS
+
 
 def _normalize_photo(data: bytes) -> bytes | None:
     """PIL: пережатие картинки под VK-загрузку — RGB, разумные размеры, JPEG.
@@ -372,16 +384,16 @@ class VkMessenger:
 
         return sent
 
-    async def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, fallback_text: str | None = None, **unused: Any) -> int | None:
+    async def send_photo(self, chat_id: int, photo: Any, *, caption: str | None = None, reply_markup: VkKeyboard | None = None, **unused: Any) -> int | None:
         """Аналог bot.send_photo: фото — bytes/BytesIO/path; подпись — plain-текст.
 
-        Загрузка идёт каскадом, чтобы картинка ушла в любом случае:
-        1. штатный vk_api.photo_messages (старые серверы upload.php);
-        2. пережатие в JPEG (RGB, разумные размеры) и повтор;
-        3. картинка как документ с превью (docs.getMessagesUploadServer — стабильный путь,
-           работает и когда VK отдаёт новый v2/bulk_upload вместо upload.php);
-        если не помогло ничего и задан fallback_text — отправляем текст с клавиатурой,
-        чтобы игра не «молчала» без картинки.
+        Кадр уходит только картинкой: текстового запасного пути нет (по просьбе
+        владельца — сообщений без фото в игре быть не должно). Каскад загрузки:
+        1. пережатие в JPEG (RGB, разумные размеры) — VK нестабильно принимает PNG с альфой;
+        2. фото в сообщения с перебором полей photo/file1/file0 (VK менял протокол);
+        3. повтор всей загрузки (сервер VK иногда отвечает ошибкой с первого раза);
+        4. картинка документом с превью (docs.getMessagesUploadServer — стабильный путь).
+        Если не сработало ничего — в лог пишется причина, сообщение не отправляется.
         """
         try:
             if isinstance(photo, (str, Path)):
@@ -399,7 +411,7 @@ class VkMessenger:
 
         if not data:
             logger.warning("send_photo: пустые данные фото (peer %s)", chat_id)
-            return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
+            return None
 
         # Приводим картинку к RGB/JPEG: VK нестабильно принимает PNG с альфой,
         # палитрой и «сырым» content-type. Нормализация чинит карту Зоны и кадры.
@@ -407,60 +419,96 @@ class VkMessenger:
         if normalized:
             data = normalized
 
-        # Только одна попытка загрузить как фото. Если не вышло — один запасной путь
-        # загрузки документом, затем текст без картинки; циклов повторных попыток нет.
-        attachment = await self._upload_photo_attachment(data, int(chat_id))
-        if attachment:
-            return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
+        for attempt in range(PHOTO_UPLOAD_ATTEMPTS):
+            started = time.monotonic()
+            attachment = await self._upload_photo_attachment(data, int(chat_id))
+            if attachment:
+                return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
+            if attempt + 1 < PHOTO_UPLOAD_ATTEMPTS:
+                # Повтор помогает при быстром сбое (не то поле, ответ сервера без photo).
+                # Если загрузка «висела» до таймаута — повтор только тянет время,
+                # сразу идём запасным путём (документ).
+                if time.monotonic() - started > 2.0:
+                    break
+                await asyncio.sleep(0.4)
         attachment = await self._upload_photo_document(data, int(chat_id))
         if attachment:
             return await self.send_message(int(chat_id), caption or "", reply_markup=reply_markup, attachment=attachment)
-        return await self._photo_fallback(chat_id, caption, reply_markup, fallback_text)
+        logger.error(
+            "send_photo: картинка не ушла в VK (peer %s) — сообщение без фото не отправляем",
+            chat_id,
+        )
+        return None
 
-    async def _photo_fallback(self, chat_id: int, caption: str | None, reply_markup: VkKeyboard | None, fallback_text: str | None) -> int | None:
-        """Если фото не ушло — отправляем подпись/текст с клавиатурой (игра не молчит)."""
-        text = fallback_text if fallback_text is not None else (caption or "")
-        if not text.strip():
-            logger.warning("send_photo: картинка не отправлена (peer %s), fallback пуст", chat_id)
-            return None
-        return await self.send_message(int(chat_id), text, reply_markup=reply_markup)
-
-    async def _upload_photo_attachment(self, data: bytes, peer_id: int) -> str | None:
-        """Одна асинхронная попытка загрузки фото через httpx, без VkUpload."""
+    async def _photo_upload_url(self, peer_id: int) -> str:
+        """Адрес загрузки фото в сообщения (пустая строка — VK не отдал)."""
         try:
             server = await asyncio.to_thread(
                 self.vk.method, "photos.getMessagesUploadServer", {"peer_id": int(peer_id)}
             )
-            upload_url = str((server or {}).get("upload_url") or "")
-            if not upload_url:
-                logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
-                return None
+        except Exception as exc:
+            logger.warning("photos.getMessagesUploadServer failed (peer %s): %s", peer_id, exc)
+            return ""
+        upload_url = str((server or {}).get("upload_url") or "")
+        if not upload_url:
+            logger.warning("photos.getMessagesUploadServer: пустой upload_url (peer %s)", peer_id)
+        return upload_url
+
+    async def _post_photo(
+        self, upload_url: str, data: bytes, field: str
+    ) -> tuple[dict[str, Any] | None, str]:
+        """POST картинки на upload-сервер VK с указанным именем поля."""
+        try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(HTTP_TIMEOUT_SECONDS)) as client:
                 response = await asyncio.wait_for(
                     client.post(
                         upload_url,
-                        files={"photo": ("photo.jpg", data, "image/jpeg")},
+                        files={field: ("photo.jpg", data, "image/jpeg")},
                     ),
                     timeout=HTTP_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
                 payload = response.json()
-            photo = payload.get("photo") if isinstance(payload, dict) else None
-            if not photo:
-                logger.warning("photo upload: VK не вернул photo (peer %s)", peer_id)
-                return None
-            saved = await asyncio.to_thread(
-                self.vk.method,
-                "photos.saveMessagesPhoto",
-                {"server": payload.get("server"), "photo": photo, "hash": payload.get("hash")},
-            )
-            attachment = self._photo_attachment(saved, peer_id)
-            if not attachment:
-                logger.warning("photos.saveMessagesPhoto вернул пустой результат (peer %s)", peer_id)
-            return attachment
         except Exception as exc:
-            logger.warning("photo upload failed (peer %s): %s", peer_id, exc)
+            return None, f"поле {field}: {exc}"
+        if not isinstance(payload, dict):
+            return None, f"поле {field}: неожиданный ответ upload-сервера"
+        return payload, ""
+
+    async def _upload_photo_attachment(self, data: bytes, peer_id: int) -> str | None:
+        """Загрузка фото в сообщения: перебор полей (photo/file1/file0) и сохранение."""
+        upload_url = await self._photo_upload_url(peer_id)
+        if not upload_url:
             return None
+        last_error = ""
+        for field in _photo_upload_fields(upload_url):
+            payload, error = await self._post_photo(upload_url, data, field)
+            if error:
+                last_error = error
+                continue
+            photo = (payload or {}).get("photo")
+            if not photo:
+                last_error = f"поле {field}: VK не вернул photo"
+                continue
+            try:
+                saved = await asyncio.to_thread(
+                    self.vk.method,
+                    "photos.saveMessagesPhoto",
+                    {"server": (payload or {}).get("server"), "photo": photo, "hash": (payload or {}).get("hash")},
+                )
+            except Exception as exc:
+                last_error = f"поле {field}: photos.saveMessagesPhoto — {exc}"
+                continue
+            attachment = self._photo_attachment(saved, peer_id)
+            if attachment:
+                if field != "photo":
+                    # Видно в логе, какой протокол загрузки сейчас работает у VK.
+                    logger.info("photo upload: сработало поле %s (peer %s)", field, peer_id)
+                return attachment
+            last_error = f"поле {field}: photos.saveMessagesPhoto вернул пустой результат"
+        if last_error:
+            logger.warning("photo upload failed (peer %s): %s", peer_id, last_error)
+        return None
 
     async def _upload_photo_document(self, data: bytes, peer_id: int) -> str | None:
         """Резервная одна загрузка изображения как документа через httpx."""

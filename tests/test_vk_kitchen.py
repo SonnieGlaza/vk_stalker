@@ -708,27 +708,26 @@ def test_info_text_full(env):
     _run(_click_texts(st, m, flows))
 
 
-def test_send_photo_fallback_text(env):
-    """Если картинка не загрузилась — уходит fallback-текст с клавиатурой, игра не молчит."""
-    from app.vk_platform import VkMessenger
+def test_send_photo_no_text_fallback(env):
+    """Текстового запасного пути больше нет: кадр без картинки не отправляется."""
+    import app.vk_platform as platform
+
+    assert not hasattr(platform.VkMessenger, "_photo_fallback")
+    sent: list[tuple[int, str]] = []
 
     class M:
-        def __init__(self):
-            self.sent = []
-
-        async def send_message(self, chat_id, text, *, reply_markup=None, **kw):
-            self.sent.append((int(chat_id), str(text or "")))
+        async def send_message(self, chat_id, text, *, reply_markup=None, attachment=None, **kw):
+            sent.append((int(chat_id), str(text or "")))
             return 7
 
-    m = M()
-    mid = _run(VkMessenger._photo_fallback(m, 42, "подпись", None, "запасной текст"))
-    assert mid == 7
-    assert m.sent and "запасной текст" in m.sent[0][1]
-    assert m.sent[0][0] == 42
-    # Без fallback-текста отдаём подпись; если пусто — ничего не шлём.
-    m2 = M()
-    assert _run(VkMessenger._photo_fallback(m2, 42, "", None, None)) is None
-    assert not m2.sent
+        async def _upload_photo_attachment(self, data, peer_id):
+            return None
+
+        async def _upload_photo_document(self, data, peer_id):
+            return None
+
+    assert _run(platform.VkMessenger.send_photo(M(), 42, b"png-bytes", caption="подпись")) is None
+    assert sent == []
 
 
 def test_normalize_photo_downscales(env):
@@ -849,3 +848,265 @@ def test_profile_text_format(env):
     _run(bot._handle_message(m, st, _ev("🧾 Профиль")))
     merged = _merged(m.sent)
     assert "ID: STK-" in merged and "Фракция: Долг" in merged, merged[:160]
+
+
+def test_trader_menu_without_repair_and_equip(env):
+    """«Ремонт» убран из меню торговца (он у Техника), «Экипировка» — в инвентаре."""
+
+    class KbMessenger(FakeMessenger):
+        def __init__(self):
+            super().__init__()
+            self.keyboards: list[str] = []
+
+        async def send_message(self, chat_id, text, *, reply_markup=None, attachment=None, **kw):
+            self.keyboards.append(str(getattr(reply_markup, "get_keyboard", lambda: reply_markup)()))
+            return await super().send_message(chat_id, text, reply_markup=reply_markup, **kw)
+
+    st, _m = env
+    kb = KbMessenger()
+    _run(bot._trader_menu(kb, st, _ev("Торговец")))
+    board = kb.keyboards[0] if kb.keyboards else ""
+    assert "Техник" in board and "Медик" in board, board
+    assert "Ремонт" not in board, board
+    assert "Экипировка" not in board, board
+    # Ремонт остался доступен (через Техника).
+    kb.sent.clear()
+    _run(bot._handle_callback(kb, st, _ev_cb("trade:repair")))
+    assert "чиним" in _merged(kb.sent).lower(), _merged(kb.sent)
+    # Экипировка живёт в инвентаре: кнопка есть в клавиатуре инвентаря.
+    kb.keyboards.clear()
+    _run(bot._handle_message(kb, st, _ev("🎒 Инвентарь")))
+    assert any("trade:equip" in board for board in kb.keyboards), kb.keyboards
+    # И с экрана экипировки можно вернуться в инвентарь.
+    kb.keyboards.clear()
+    _run(bot._handle_callback(kb, st, _ev_cb("trade:equip")))
+    assert any("inventory:root" in board for board in kb.keyboards), kb.keyboards
+
+
+def test_admin_gameplay_commands(env):
+    """Админ-команды: урон НПС по категориям, число НПС в заданиях, выброс."""
+    from app.admin_gameplay import (
+        CATEGORY_QUESTS,
+        lab_damage_multiplier,
+        npc_damage_multiplier,
+        quest_npc_count,
+    )
+
+    st, m = env
+
+    async def run():
+        for line in ["уроннпс", "уроннпс задания 1.5", "уроннпс лаба2 0.5", "уроннпс сброс", "нпс", "нпс 3", "нпс сброс", "выброс 10", "выброс стоп"]:
+            m.sent.clear()
+            await bot._handle_message(m, st, _ev(line))
+            assert m.sent, f"команда '{line}' молчит"
+            assert "Не понял" not in _merged(m.sent), f"команда '{line}' -> Не понял"
+        # Не-админ команд не видит.
+        bot._ADMIN_IDS = ()
+        m.sent.clear()
+        handled = await bot._admin_command(m, st, _ev("уроннпс задания 2"), "уроннпс задания 2", "уроннпс задания 2")
+        assert handled is False
+        bot._ADMIN_IDS = (UID,)
+
+    _run(run())
+    assert npc_damage_multiplier(st, CATEGORY_QUESTS) == 1.0
+    assert quest_npc_count(st) is None
+
+    async def apply():
+        await bot._handle_message(m, st, _ev("уроннпс задания 2"))
+        await bot._handle_message(m, st, _ev("уроннпс лабы 0.5"))
+        await bot._handle_message(m, st, _ev("нпс 4"))
+
+    _run(apply())
+    assert npc_damage_multiplier(st, CATEGORY_QUESTS) == 2.0
+    assert lab_damage_multiplier(st, "limit1") == 0.5
+    assert quest_npc_count(st) == 4
+
+
+def test_quest_npc_count_override(env):
+    """Настройка «нпс N» даёт ровно N НПС в вылазке (0 — без НПС)."""
+    from app.game_logic import QUEST_CONTRACTS, QUESTS
+    from app.quest_mission import _build_session
+
+    st, _m = env
+    template = QUEST_CONTRACTS["easy_dump"]
+    plain = _build_session(template, QUESTS["easy"])
+    forced = _build_session(template, QUESTS["easy"], npc_count_override=4)
+    none = _build_session(template, QUESTS["easy"], npc_count_override=0)
+    assert len(forced.npcs) == 4, len(forced.npcs)
+    assert len(forced.npc_kinds) == len(forced.npcs) == len(forced.npc_weapons)
+    assert len(forced.npc_hp) == len(forced.npcs) == len(forced.npc_max_hp)
+    assert len(none.npcs) == 0
+    assert len(plain.npcs) == len(plain.npc_kinds)
+
+
+def test_death_log_written_on_any_respawn(env):
+    """Журнал «☠️ Смерти» пишется на любом пути респавна (оффлайн-смерть тоже)."""
+    from app.game_logic import (
+        build_death_log_text,
+        remember_death_cause,
+        respawn_character,
+    )
+
+    st, m = env
+    remember_death_cause(st, UID, "hunger")
+    st.change_health(UID, -1000)
+    assert st.get_character(UID, refresh_energy=False).health <= 0
+    respawn_character(st, UID)
+    journal = build_death_log_text(st, UID)
+    assert "пуст" not in journal, journal
+    assert "Тестовый" in journal, journal
+    # Вторая смерть добавляет вторую запись, а не дублирует первую.
+    remember_death_cause(st, UID, "emission")
+    st.change_health(UID, -1000)
+    respawn_character(st, UID)
+    journal2 = build_death_log_text(st, UID)
+    assert journal2.count("1. ") == 1 and journal2.count("2. ") == 1, journal2
+    # И через кнопку меню журнал отдаётся.
+    m.sent.clear()
+    _run(bot._handle_message(m, st, _ev("☠️ Смерти")))
+    assert "Журнал смертей" in _merged(m.sent), _merged(m.sent)[:200]
+
+
+def test_travel_eta_message(env):
+    """Во время перехода есть сообщение «сколько ещё ехать», оно правится, а не спамит."""
+    from datetime import timedelta
+
+    from app.game_logic import travel_to
+    from app.storage import utc_now
+
+    class EditMessenger(FakeMessenger):
+        def __init__(self):
+            super().__init__()
+            self.edited: list[tuple[int, int, str]] = []
+            self.deleted: list[tuple[int, int]] = []
+
+        async def edit_message_text(self, text, chat_id, message_id, *, reply_markup=None, **kw):
+            self.edited.append((int(chat_id), int(message_id), str(text or "")))
+            return True
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((int(chat_id), int(message_id)))
+            return True
+
+    st, _m = env
+    m = EditMessenger()
+    st.set_location(UID, "Свалка")
+    result = travel_to(st, UID, "Кордон", transport_mode="foot")
+    assert result.ok, result.text
+    assert "В пути:" in result.text and "осталось ехать" in result.text, result.text
+    _run(bot._travel_eta_tick(m, st))
+    assert m.sent and "Осталось ехать" in m.sent[-1][1], m.sent
+    assert st.get_meta(f"travel_eta_msg:{UID}"), "id сообщения-таймера не сохранён"
+    sent_before = len(m.sent)
+    assert _run(bot._travel_eta_tick(m, st)) == 1
+    assert len(m.sent) == sent_before, "таймер отправил новое сообщение вместо правки"
+    assert m.edited, "сообщение-таймер не обновилось"
+    # Пришло время — таймер убирается, игроку уходит уведомление о прибытии.
+    st.set_travel_arrives_at(UID, utc_now() - timedelta(seconds=1))
+    assert _run(bot._process_travel_arrivals(m, st)) == 1
+    assert st.get_meta(f"travel_eta_msg:{UID}") is None
+    assert m.deleted and any("прибыл" in text for _, text in m.sent), m.sent[-1:]
+
+
+def test_travel_timer_loop_updates_every_second(env):
+    """Таймер перехода обновляется раз в секунду (а не раз в минуту)."""
+    import asyncio
+
+    from app.game_logic import travel_to
+
+    class EditMessenger(FakeMessenger):
+        def __init__(self):
+            super().__init__()
+            self.edited: list[tuple[int, int, str]] = []
+            self.deleted: list[tuple[int, int]] = []
+
+        async def edit_message_text(self, text, chat_id, message_id, *, reply_markup=None, **kw):
+            self.edited.append((int(chat_id), int(message_id), str(text or "")))
+            return True
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((int(chat_id), int(message_id)))
+            return True
+
+    st, _m = env
+    m = EditMessenger()
+    st.set_location(UID, "Свалка")
+    assert travel_to(st, UID, "Кордон", transport_mode="foot").ok
+    assert bot.TRAVEL_TIMER_INTERVAL_SECONDS <= 1.0
+    # Первое сообщение-таймер уже есть: дальше цикл должен именно править его.
+    assert _run(bot._travel_eta_tick(m, st)) == 1
+    m.edited.clear()
+
+    async def run_loop():
+        task = asyncio.create_task(bot._travel_timer_loop(m))
+        await asyncio.sleep(2.5)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    _run(run_loop())
+    assert len(m.edited) >= 2, f"таймер обновился всего {len(m.edited)} раз за 2,5 сек"
+    # Секунды в тексте реально меняются (таймер живой, а не «замер»).
+    assert len({text for _, _, text in m.edited}) >= 2, m.edited
+
+
+def test_frame_replacement_deletes_previous(env):
+    """Новый кадр активности удаляет предыдущий — старые кадры не копятся."""
+    from app.ephemeral_messages import get_current_message, queue_size
+
+    class FrameMessenger(FakeMessenger):
+        def __init__(self):
+            super().__init__()
+            self.deleted: list[tuple[int, int]] = []
+            self._next_id = 100
+
+        async def send_photo(self, chat_id, photo, *, caption=None, reply_markup=None, **kw):
+            self._next_id += 1
+            self.sent.append((int(chat_id), "📷 " + str(caption or "")))
+            return self._next_id
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((int(chat_id), int(message_id)))
+            return True
+
+    st, _m = env
+    m = FrameMessenger()
+    _run(bot._send_frame(m, st, UID, b"png-1", caption="первый", kind="walk"))
+    first = get_current_message(st, UID, "walk")
+    assert first, "id кадра не запомнен"
+    _run(bot._send_frame(m, st, UID, b"png-2", caption="второй", kind="walk"))
+    second = get_current_message(st, UID, "walk")
+    assert second and second != first
+    assert (UID, first) in m.deleted, m.deleted
+    assert queue_size(st) == 1, "в очереди на удаление должен остаться только последний кадр"
+
+
+def test_ephemeral_queue_deletes_expired(env):
+    """Очередь удаляет сообщения бота по истечении TTL."""
+    import json
+
+    from app import ephemeral_messages as em
+
+    class M:
+        def __init__(self):
+            self.deleted: list[tuple[int, int]] = []
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((int(chat_id), int(message_id)))
+            return True
+
+    st, _m = env
+    em.schedule_message_deletion(st, UID, 501, ttl_seconds=3600, kind="notice")
+    em.schedule_messages_deletion(st, [(UID, 502)], ttl_seconds=3600, kind="notice")
+    assert em.queue_size(st) == 2
+    m = M()
+    assert _run(em.process_ephemeral_message_queue(m, st)) == 0
+    assert m.deleted == []
+    queue = json.loads(str(st.get_meta(em.EPHEMERAL_QUEUE_META)))
+    queue[0]["delete_at"] = "2020-01-01T00:00:00+00:00"
+    st.set_meta(em.EPHEMERAL_QUEUE_META, json.dumps(queue, ensure_ascii=False))
+    assert _run(em.process_ephemeral_message_queue(m, st)) == 1
+    assert m.deleted == [(UID, 501)], m.deleted
+    assert em.queue_size(st) == 1
