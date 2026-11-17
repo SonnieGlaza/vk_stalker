@@ -77,6 +77,12 @@ _SECRET_ZONE: dict[str, str] = {"id": "secrettrader", "kind": "secrettrader", "l
 _LEGEND_ICON_SIZE = 36
 _LEGEND_ROW_HEIGHT = 40
 
+# Плотность иконки зоны на карте: в «Метки легенд» рисунок полупрозрачный
+# (средняя альфа 60–100 из 255), из-за чего зона выглядела бледным пятном.
+ZONE_ICON_ALPHA_BOOST = 1.7
+# Плотность цветовой заливки самой зоны (было 46 — почти не видно).
+ZONE_FILL_ALPHA = 90
+
 
 def _legend_row(
     canvas: Image.Image,
@@ -545,7 +551,7 @@ def _draw_zone(
     ImageDraw.Draw(overlay).rounded_rectangle(
         (left, top, right, bottom),
         radius=radius,
-        fill=(*color, 46),
+        fill=(*color, ZONE_FILL_ALPHA),
     )
     canvas.alpha_composite(overlay)
     draw = ImageDraw.Draw(canvas)
@@ -603,6 +609,11 @@ def _draw_zone(
         box_w = max(1, right - left + 1)
         box_h = max(1, bottom - top + 1)
         icon = icon.resize((box_w, box_h), Image.Resampling.LANCZOS)
+        # Поднимаем плотность: исходники полупрозрачные, без этого зона читается как пятно.
+        alpha = icon.getchannel("A").point(
+            lambda value: 0 if value < 8 else min(255, int(value * ZONE_ICON_ALPHA_BOOST))
+        )
+        icon.putalpha(alpha)
         canvas.paste(icon, (left, top), icon)
 
 
