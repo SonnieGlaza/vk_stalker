@@ -814,22 +814,29 @@ def legend_icon_raw(kind: str) -> Image.Image | None:
     return img.copy()
 
 
-#: Доля иконки от центра, которую считаем самим символом: внешняя рамка отбрасывается.
-LEGEND_SYMBOL_CROP = 0.6
+#: Доля иконки от центра, которую считаем самим символом.
+#: 0.54 — рамка «Метки легенд» (она идёт на 10–18% от края) в кадр не попадает,
+#: остаётся только сам символ (сундук, спираль, человечек…).
+LEGEND_SYMBOL_CROP = 0.54
+#: Для строки легенды кадр ещё плотнее: там иконка мелкая и остатки рамки заметны.
+LEGEND_ROW_SYMBOL_CROP = 0.44
 
 
-def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
+def legend_symbol_image(kind: str, size: int, *, crop_ratio: float | None = None) -> Image.Image | None:
     """Символ зоны без внешней рамки — центральная часть иконки, вписанная в size×size.
 
     Нужен там, где рамку рисует сам код (квадратная обводка зоны): от обыска остаётся
-    только сундук, от аномалии — спираль и так далее.
+    только сундук, от аномалии — спираль и так далее. ``crop_ratio`` позволяет взять
+    более плотный кадр (в легенде он меньше, чтобы не попали остатки рамки).
     """
     icon = legend_icon_raw(kind)
     if icon is None:
         return None
+    ratio = LEGEND_SYMBOL_CROP if crop_ratio is None else float(crop_ratio)
+    ratio = max(0.2, min(1.0, ratio))
     src_w, src_h = icon.size
-    crop_w = max(8, int(src_w * LEGEND_SYMBOL_CROP))
-    crop_h = max(8, int(src_h * LEGEND_SYMBOL_CROP))
+    crop_w = max(8, int(src_w * ratio))
+    crop_h = max(8, int(src_h * ratio))
     left = (src_w - crop_w) // 2
     top = (src_h - crop_h) // 2
     crop = icon.crop((left, top, left + crop_w, top + crop_h))
@@ -1241,7 +1248,7 @@ def render_hunt_frame(
     for i, (kind, label) in enumerate(legend_entries):
         lx = legend_cols[0] if i % 2 == 0 else legend_cols[1]
         ly = legend_y + 16 + (i // 2) * 34
-        icon = legend_symbol_image(kind, 30)
+        icon = legend_symbol_image(kind, 30, crop_ratio=LEGEND_ROW_SYMBOL_CROP)
         if icon is not None:
             canvas.paste(icon, (lx, ly), icon)
             draw.text((lx + 34, ly + 6), label, fill=(210, 210, 210), font=legend_font)

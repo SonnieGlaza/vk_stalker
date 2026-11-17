@@ -17,6 +17,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from app.artifact_hunt import (
+    LEGEND_ROW_SYMBOL_CROP,
     _character_rating_points,
     _cover_crop,
     _draw_cell,
@@ -97,7 +98,7 @@ def _legend_row(
     font: Any,
 ) -> int:
     """Одна строка легенды: иконка из «Метки легенд» или цветная точка. Возвращает новую y."""
-    icon = legend_symbol_image(kind, _LEGEND_ICON_SIZE)
+    icon = legend_symbol_image(kind, _LEGEND_ICON_SIZE, crop_ratio=LEGEND_ROW_SYMBOL_CROP)
     if icon is not None:
         canvas.paste(icon, (pl + 20, entry_y), icon)
         label_x = pl + 20 + _LEGEND_ICON_SIZE + 10
