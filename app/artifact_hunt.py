@@ -4,13 +4,12 @@ import json
 import random
 from collections import deque
 from dataclasses import dataclass
-from collections import deque
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from app.game_logic import (
     ARTIFACT_DETECTORS,
@@ -942,6 +941,67 @@ def drop_icon_frame(img: Image.Image, threshold: int = ICON_ALPHA_MIN, depth: in
     return out
 
 
+def drop_specks(
+    img: Image.Image,
+    threshold: int = 8,
+    small_share: float = 0.3,
+    aspect_limit: float = 2.5,
+) -> Image.Image:
+    """Убрать обрывки рамки: остаются только плотные части рисунка.
+
+    Полоски и брызги фактуры рамки — мелкие и сильно вытянутые области; крупные части
+    рисунка (человечек, сундук, спираль, пальцы следа) остаются целыми.
+    """
+    alpha = img.getchannel("A")
+    mask = alpha.point(lambda value: 255 if value > threshold else 0)
+    w, h = img.size
+    px = mask.load()
+    seen: set[tuple[int, int]] = set()
+    blobs: list[tuple[list[tuple[int, int]], int, int, int, int]] = []
+    for y in range(h):
+        for x in range(w):
+            if px[x, y] == 0 or (x, y) in seen:
+                continue
+            stack = [(x, y)]
+            seen.add((x, y))
+            blob: list[tuple[int, int]] = []
+            x0 = x1 = x
+            y0 = y1 = y
+            while stack:
+                cx, cy = stack.pop()
+                blob.append((cx, cy))
+                x0, x1 = min(x0, cx), max(x1, cx)
+                y0, y1 = min(y0, cy), max(y1, cy)
+                for nx, ny in (
+                    (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1),
+                    (cx + 1, cy + 1), (cx - 1, cy - 1), (cx + 1, cy - 1), (cx - 1, cy + 1),
+                ):
+                    if 0 <= nx < w and 0 <= ny < h and px[nx, ny] > 0 and (nx, ny) not in seen:
+                        seen.add((nx, ny))
+                        stack.append((nx, ny))
+            blobs.append((blob, x0, y0, x1, y1))
+    if not blobs:
+        return img
+    biggest = max(len(blob) for blob, *_rest in blobs)
+    drop: list[tuple[int, int]] = []
+    for blob, x0, y0, x1, y1 in blobs:
+        bw = max(1, x1 - x0 + 1)
+        bh = max(1, y1 - y0 + 1)
+        aspect = max(bw, bh) / min(bw, bh)
+        # Полоски и брызги фактуры рамки: мелкие и сильно вытянутые области.
+        if len(blob) < biggest * 0.3 and aspect > 2.5:
+            drop.extend(blob)
+    if not drop:
+        return img
+    out = img.copy()
+    out_alpha = out.getchannel("A")
+    data = out_alpha.load()
+    for (x, y) in drop:
+        data[x, y] = 0
+    out.putalpha(out_alpha)
+    return out
+
+
 def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
     """Символ зоны без внешней рамки: у иконки отбрасывается только рамка по краям,
 
@@ -953,6 +1013,8 @@ def legend_symbol_image(kind: str, size: int) -> Image.Image | None:
     box = symbol_bbox(icon)
     symbol = icon.crop(box) if box is not None else icon
     symbol.putalpha(symbol.getchannel("A").point(icon_alpha_curve))
+    # Убираем мелкие обрывки рамки (полоски, точки), оставляя сам рисунок.
+    symbol = drop_specks(symbol)
     # Окно рамки шире самого рисунка — подрезаем по факту, иначе символ встанет не по центру.
     tight = symbol.getchannel("A").point(lambda value: 255 if value > 8 else 0).getbbox()
     if tight is not None:
