@@ -757,15 +757,40 @@ def _load_location_thumb(location: str) -> Image.Image | None:
     return _load_hunt_map(location)
 
 
+def _trim_transparent(img: Image.Image, *, threshold: int = 8, pad: int = 1) -> Image.Image:
+    """Обрезать прозрачные поля вокруг рисунка (по альфе).
+
+    Исходники в «Метки легенд» — 128×128 с полями, поэтому при отрисовке
+    на клетке значок выглядел заметно мельче самой клетки.
+    """
+    try:
+        alpha = img.getchannel("A")
+        bbox = alpha.point(lambda value: 255 if value > threshold else 0).getbbox()
+    except Exception:
+        return img
+    if bbox is None:
+        return img
+    left, top, right, bottom = bbox
+    left = max(0, left - pad)
+    top = max(0, top - pad)
+    right = min(img.width, right + pad)
+    bottom = min(img.height, bottom + pad)
+    if (right - left, bottom - top) == img.size:
+        return img
+    return img.crop((left, top, right, bottom))
+
+
 @lru_cache(maxsize=12)
 def _cached_legend_icon(name: str) -> Image.Image | None:
     path = _LEGEND_ICONS_DIR / name
     if not path.is_file():
         return None
     try:
-        return Image.open(path).convert("RGBA")
+        img = Image.open(path).convert("RGBA")
     except Exception:
         return None
+    # Без обрезки полей значок на клетке выглядит крошечным (исходник 128×128).
+    return _trim_transparent(img)
 
 
 def legend_icon_for(kind: str, size: int = 30) -> Image.Image | None:
@@ -779,7 +804,7 @@ def legend_icon_for(kind: str, size: int = 30) -> Image.Image | None:
 
 
 def legend_icon_raw(kind: str) -> Image.Image | None:
-    """Оригинал иконки зоны из «Метки легенд» (RGBA) без изменения размера."""
+    """Иконка зоны из «Метки легенд» (RGBA) без прозрачных полей и без масштаба."""
     name = _LEGEND_ICON_FILES.get(kind)
     if name is None:
         return None
