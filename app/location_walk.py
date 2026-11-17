@@ -607,24 +607,6 @@ def _draw_zone(
             outline=color,
             width=5,
         )
-    if kind == "anomaly":
-        # «Пузырьки» аномалий — только на достаточно крупных зонах.
-        # Обводка темнее заливки, иначе на плотном квадрате её не видно.
-        bubble = tuple(max(0, int(c * 0.55)) for c in color)
-        if w >= cell * 2 and h >= cell * 2:
-            offsets = (
-                (-0.55, -0.45),
-                (0.45, -0.6),
-                (0.65, 0.3),
-                (-0.3, 0.6),
-                (-0.8, 0.1),
-                (0.15, 0.8),
-            )
-            for fx, fy in offsets[: 3 + 3 * max(0, min(1, min(w, h) // cell - 1))]:
-                br = max(4, cell // 2)
-                bx = int(left + (fx + 1) / 2 * w)
-                by = int(top + (fy + 1) / 2 * h)
-                draw.ellipse((bx - br, by - br, bx + br, by + br), outline=(*bubble, 220), width=2)
 
 
 def render_walk_frame(storage: Storage, player: Character) -> bytes:
