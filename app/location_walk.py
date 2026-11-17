@@ -186,7 +186,7 @@ LOCATION_WALK_RECTS: dict[str, dict[str, tuple[tuple[int, int, int, int], ...]]]
             (12, 4, 13, 4),
         ),
         "base": (
-            (8, 10, 12, 15),
+            (9, 12, 13, 14),
         ),
         "anomaly": (
             (12, 9, 12, 9),
