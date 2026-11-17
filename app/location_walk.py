@@ -80,8 +80,8 @@ _LEGEND_ROW_HEIGHT = 40
 # Плотность иконки зоны на карте: в «Метки легенд» рисунок полупрозрачный
 # (средняя альфа 60–100 из 255), из-за чего зона выглядела бледным пятном.
 ZONE_ICON_ALPHA_BOOST = 1.7
-# Плотность цветовой заливки зоны: 255 — квадрат зоны закрашен полностью, без просветов карты.
-ZONE_FILL_ALPHA = 255
+# Плотность цветовой заливки зоны (лёгкая подсветка; фон под символом не заливаем).
+ZONE_FILL_ALPHA = 46
 # Какую часть иконки (от центра) растягиваем на зону: внешняя рамка «Метки легенд»
 # обрезается, чтобы сам символ (человечек/ящик/спираль) заполнил всю зону.
 ZONE_ICON_CROP = 0.6
@@ -543,12 +543,12 @@ def _zone_icon_tile(
     height: int,
     fallback_color: tuple[int, int, int],
 ) -> Image.Image:
-    """Плитка зоны: центральная часть иконки, растянутая на всю зону и сделанная сплошной.
+    """Плитка зоны: центральная часть иконки, растянутая на всю зону, без фона.
 
     1) берём центр иконки (внешняя рамка «Метки легенд» не нужна — зона и так обведена);
     2) растягиваем на весь прямоугольник зоны;
-    3) поднимаем плотность и заливаем прозрачные участки тоном самого рисунка,
-       чтобы сквозь плитку не проглядывала карта.
+    3) поднимаем плотность самого рисунка. Прозрачные участки остаются прозрачными —
+       фон под символом не заливаем.
     """
     src_w, src_h = icon.size
     crop_w = max(8, int(src_w * ZONE_ICON_CROP))
@@ -561,27 +561,7 @@ def _zone_icon_tile(
         lambda value: 0 if value < 8 else min(255, int(value * ZONE_ICON_ALPHA_BOOST))
     )
     tile.putalpha(alpha)
-    return Image.alpha_composite(
-        Image.new("RGBA", tile.size, (*_icon_tone(tile, fallback_color), 255)), tile
-    )
-
-
-def _icon_tone(icon: Image.Image, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
-    """Средний тон плотных пикселей иконки — им заливаются её прозрачные участки.
-
-    Благодаря этому плитка зоны получается сплошной и остаётся в цвете самого рисунка
-    (обыск — жёлтый, аномалия — белый, лаборатория — зелёный и т.д.).
-    """
-    try:
-        from PIL import ImageStat
-
-        mask = icon.getchannel("A").point(lambda value: 255 if value >= 160 else 0)
-        if mask.getbbox() is None:
-            return fallback
-        mean = ImageStat.Stat(icon.convert("RGB"), mask=mask).mean
-        return tuple(max(0, min(255, int(channel))) for channel in mean)  # type: ignore[return-value]
-    except Exception:
-        return fallback
+    return tile
 
 
 def _draw_zone(
@@ -614,7 +594,9 @@ def _draw_zone(
     if icon is not None:
         box_w = max(1, right - left + 1)
         box_h = max(1, bottom - top + 1)
-        canvas.paste(_zone_icon_tile(icon, box_w, box_h, color), (left, top))
+        # Плитка без фона: кладём с её прозрачностью, карта видна вокруг символа.
+        tile = _zone_icon_tile(icon, box_w, box_h, color)
+        canvas.paste(tile, (left, top), tile)
 
     # 3) Обводка зоны — поверх плитки, иначе её не видно на сплошном квадрате.
     draw = ImageDraw.Draw(canvas)
